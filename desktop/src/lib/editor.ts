@@ -42,6 +42,7 @@ export type { ClipKind } from "./generated/ClipKind";
 export type { MediaItem } from "./generated/MediaItem";
 export type { Track } from "./generated/Track";
 export type { Clip } from "./generated/Clip";
+export type { BlendMode } from "./generated/BlendMode";
 export type { Timeline as TimelineData } from "./generated/Timeline";
 export type { SettingsView as EditorSettings } from "./generated/SettingsView";
 export type { ClipPatch } from "./generated/ClipPatch";
@@ -348,6 +349,7 @@ export function commandsForEcho(base: Clip, patch: Partial<Clip>): EditorCommand
   if (has("fadeIn") && patch.fadeIn !== undefined) update.fadeIn = patch.fadeIn;
   if (has("fadeOut") && patch.fadeOut !== undefined) update.fadeOut = patch.fadeOut;
   if (has("opacity") && patch.opacity !== undefined) update.opacity = patch.opacity;
+  if (has("blendMode") && patch.blendMode !== undefined) update.blendMode = patch.blendMode;
   if (has("preservePitch") && patch.preservePitch !== undefined) {
     update.preservePitch = patch.preservePitch;
   }

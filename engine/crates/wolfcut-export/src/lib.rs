@@ -27,6 +27,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Deserialize;
+use wolfcut_core::BlendMode;
 use wolfcut_core::frame::Frame;
 use wolfcut_core::time::{FrameRate, Rational};
 use wolfcut_core::timeline::{Clip, ClipId, MediaRef, Timeline, Track, TrackKind, Transform};
@@ -34,6 +35,7 @@ use wolfcut_media::audio::{self, AudioClip};
 use wolfcut_media::{
     DecodeOptions, EncodeOptions, FfmpegDecoder, FfmpegEncoder, FrameSink, FrameSource,
 };
+use wolfcut_project::model::BlendMode as ModelBlendMode;
 use wolfcut_render::{Compositor, CpuCompositor, Layer, Placement, plan_frame};
 
 /// What a flattened clip is. Typed, so a kind check the compiler has not
@@ -114,6 +116,11 @@ pub struct ExportClip {
     /// requests from a UI that predates it.
     #[serde(default = "unity")]
     pub opacity: f64,
+    /// How the picture combines with the layers beneath it. Defaulted, like
+    /// `opacity`, so a request from a UI that predates it still exports.
+    #[cfg_attr(feature = "types", ts(as = "Option<ModelBlendMode>", optional))]
+    #[serde(default)]
+    pub blend_mode: ModelBlendMode,
     /// FFmpeg *video* filter chain from the Effects tab, or empty. Applied at
     /// decode, after scaling - see `DecodeOptions::filter_chain`.
     #[serde(default)]
@@ -453,6 +460,7 @@ fn audio_clip(clip: &ExportClip) -> AudioClip {
 fn place_layer<'a>(
     frame: &'a Frame,
     opacity: f32,
+    blend_mode: BlendMode,
     transform: &Transform,
     width: u32,
     height: u32,
@@ -472,12 +480,45 @@ fn place_layer<'a>(
     Layer::new(frame)
         .at(x as i32, y as i32)
         .with_opacity(opacity)
+        .with_blend_mode(blend_mode)
         .with_placement(placement)
+}
+
+/// The engine's blend mode for a document's.
+///
+/// Two enums with the same variants, because `wolfcut-core` carries no serde
+/// and the document model is nothing but serde. Written as a `match` rather
+/// than a cast on purpose: adding a mode to one enum and forgetting the other
+/// is then a compile error instead of a mode that silently renders as normal.
+fn engine_blend_mode(mode: ModelBlendMode) -> BlendMode {
+    match mode {
+        ModelBlendMode::Normal => BlendMode::Normal,
+        ModelBlendMode::Darken => BlendMode::Darken,
+        ModelBlendMode::Multiply => BlendMode::Multiply,
+        ModelBlendMode::ColorBurn => BlendMode::ColorBurn,
+        ModelBlendMode::Lighten => BlendMode::Lighten,
+        ModelBlendMode::Screen => BlendMode::Screen,
+        ModelBlendMode::PlusLighter => BlendMode::PlusLighter,
+        ModelBlendMode::ColorDodge => BlendMode::ColorDodge,
+        ModelBlendMode::Overlay => BlendMode::Overlay,
+        ModelBlendMode::SoftLight => BlendMode::SoftLight,
+        ModelBlendMode::HardLight => BlendMode::HardLight,
+        ModelBlendMode::Difference => BlendMode::Difference,
+        ModelBlendMode::Exclusion => BlendMode::Exclusion,
+        ModelBlendMode::Hue => BlendMode::Hue,
+        ModelBlendMode::Saturation => BlendMode::Saturation,
+        ModelBlendMode::Color => BlendMode::Color,
+        ModelBlendMode::Luminosity => BlendMode::Luminosity,
+    }
 }
 
 /// The best compositor this machine offers: the GPU when the `gpu` feature is
 /// on and the machine has one, the CPU reference otherwise. Never an error -
 /// a machine with no adapter renders slower, not not-at-all.
+///
+/// Safe to choose without looking at the edit. Either backend honours every
+/// layer's blend mode; the GPU one hands the frames it cannot draw itself
+/// straight to the CPU, so this choice is only ever about speed.
 fn best_compositor() -> Box<dyn Compositor> {
     #[cfg(feature = "gpu")]
     if let Some(gpu) = wolfcut_render::WgpuCompositor::new() {
@@ -526,7 +567,8 @@ fn render_picture(
         let time = rate.time_of_frame(index);
         let plan = plan_frame(&timeline, time);
 
-        let mut sources: Vec<(Frame, f32, Transform)> = Vec::with_capacity(plan.layers.len());
+        let mut sources: Vec<(Frame, f32, BlendMode, Transform)> =
+            Vec::with_capacity(plan.layers.len());
         for layer in &plan.layers {
             let decoder = match decoders.entry(layer.clip) {
                 std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
@@ -579,14 +621,21 @@ fn render_picture(
             // aborting the export - a clip trimmed past its media's end is a
             // mistake in the edit, not a failure of the renderer.
             if let Some(frame) = decoder.next_frame().map_err(|error| error.to_string())? {
-                sources.push((frame, layer.opacity, layer.transform));
+                sources.push((frame, layer.opacity, layer.blend_mode, layer.transform));
             }
         }
 
         let layers: Vec<Layer<'_>> = sources
             .iter()
-            .map(|(frame, opacity, transform)| {
-                place_layer(frame, *opacity, transform, request.width, request.height)
+            .map(|(frame, opacity, blend_mode, transform)| {
+                place_layer(
+                    frame,
+                    *opacity,
+                    *blend_mode,
+                    transform,
+                    request.width,
+                    request.height,
+                )
             })
             .collect();
 
@@ -655,6 +704,7 @@ fn build_timeline(request: &ExportRequest, rate: FrameRate, visible: &[&ExportCl
             rotation: clip.rotation,
         };
         engine_clip.opacity = clip.opacity.clamp(0.0, 1.0) as f32;
+        engine_clip.blend_mode = engine_blend_mode(clip.blend_mode);
         // Quantised like every other time: the ramp must land on the same
         // frame grid the overlap does, or the dissolve ends a frame early.
         engine_clip.video_fade_in = quantise(clip.video_fade_in, rate);
@@ -731,7 +781,7 @@ pub fn preview_frame(
         preview_timeline(request, rate);
     let plan = plan_frame(&timeline, quantise(request.time, rate));
 
-    let mut sources: Vec<(std::sync::Arc<Frame>, f32, Transform)> =
+    let mut sources: Vec<(std::sync::Arc<Frame>, f32, BlendMode, Transform)> =
         Vec::with_capacity(plan.layers.len());
     let mut failures: Vec<String> = Vec::new();
     for layer in &plan.layers {
@@ -750,7 +800,9 @@ pub fn preview_frame(
             stills.contains(&layer.clip),
             chain,
         ) {
-            Ok(frame) => sources.push((frame, layer.opacity, layer.transform)),
+            Ok(frame) => {
+                sources.push((frame, layer.opacity, layer.blend_mode, layer.transform))
+            }
             Err(error) => failures.push(format!("{}: {error}", layer.media.display())),
         }
     }
@@ -769,8 +821,15 @@ pub fn preview_frame(
     // The exporter's own placement, by construction: same function.
     let layers: Vec<Layer<'_>> = sources
         .iter()
-        .map(|(frame, opacity, transform)| {
-            place_layer(frame.as_ref(), *opacity, transform, request.width, request.height)
+        .map(|(frame, opacity, blend_mode, transform)| {
+            place_layer(
+                frame.as_ref(),
+                *opacity,
+                *blend_mode,
+                transform,
+                request.width,
+                request.height,
+            )
         })
         .collect();
 
@@ -875,6 +934,7 @@ mod tests {
             offset_y: 0.0,
             rotation: 0.0,
             opacity: 1.0,
+            blend_mode: ModelBlendMode::Normal,
             video_filter_chain: String::new(),
             transition: None,
             video_fade_in: 0.0,

@@ -67,6 +67,7 @@ pub fn flatten_timeline(project: &Project, timeline_id: Option<&str>) -> Vec<Exp
                 offset_y: clip.offset_y,
                 rotation: clip.rotation,
                 opacity: clip.opacity,
+                blend_mode: clip.blend_mode,
                 video_filter_chain: video_effect_chain(&clip.video_effects),
                 // Passed through unconditionally: `resolve_transitions` is
                 // the one adjacency judge (frame/2 tolerance). The TS
@@ -101,7 +102,7 @@ fn pick_timeline<'a>(project: &'a Project, timeline_id: Option<&str>) -> Option<
 mod tests {
     use std::collections::BTreeMap;
 
-    use wolfcut_project::model::AppliedFilter;
+    use wolfcut_project::model::{AppliedFilter, BlendMode};
     use wolfcut_project::commands::{ClipPatch, NewMedia, TrackFlag};
     use wolfcut_project::{Command, Editor};
 
@@ -156,6 +157,24 @@ mod tests {
         assert_eq!(clip.has_audio, Some(true));
         assert_eq!(clip.filter_chain, "");
         assert_eq!(clip.video_filter_chain, "");
+    }
+
+    #[test]
+    fn a_blend_mode_reaches_the_flattened_clip() {
+        let (mut editor, _, clip_id) = project_with_clip();
+        assert_eq!(
+            flatten_timeline(editor.project(), None)[0].blend_mode,
+            BlendMode::Normal,
+            "a clip is normal until someone says otherwise"
+        );
+
+        editor
+            .apply(Command::UpdateClip {
+                clip_id,
+                patch: ClipPatch { blend_mode: Some(BlendMode::Screen), ..Default::default() },
+            })
+            .expect("sets the mode");
+        assert_eq!(flatten_timeline(editor.project(), None)[0].blend_mode, BlendMode::Screen);
     }
 
     #[test]

@@ -75,6 +75,7 @@ fn media_clip(path: &Path, kind: &str, start: f64, duration: f64, track: usize) 
         offset_y: 0.0,
         rotation: 0.0,
         opacity: 1.0,
+        blend_mode: Default::default(),
         video_filter_chain: String::new(),
         transition: None,
         video_fade_in: 0.0,

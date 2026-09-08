@@ -10,6 +10,7 @@
 
 use std::path::PathBuf;
 
+use wolfcut_core::BlendMode;
 use wolfcut_core::time::Rational;
 use wolfcut_core::timeline::{ClipId, Timeline, TrackKind, Transform};
 
@@ -28,6 +29,8 @@ pub struct PlannedLayer {
     pub speed: Rational,
     /// Blend strength over everything beneath, in `0.0..=1.0`.
     pub opacity: f32,
+    /// How this layer's colour combines with everything beneath it.
+    pub blend_mode: BlendMode,
     /// The clip's placement in the frame, resolution-independent.
     pub transform: Transform,
 }
@@ -82,6 +85,7 @@ pub fn plan_frame(timeline: &Timeline, time: Rational) -> FramePlan {
             // The fade ramp multiplies in here, so the compositor only ever
             // sees a per-frame opacity - it has no idea fades exist.
             opacity: (clip.opacity * clip.video_fade_factor(time)).clamp(0.0, 1.0),
+            blend_mode: clip.blend_mode,
             transform: clip.transform,
         });
     }
@@ -98,6 +102,20 @@ mod tests {
 
     fn seconds(value: i64) -> Rational {
         Rational::from_int(value)
+    }
+
+    #[test]
+    fn a_clip_lends_its_blend_mode_to_the_layer() {
+        let mut timeline = Timeline::new(640, 360, FrameRate::THIRTY);
+        let track = timeline.add_track(Track::new("V1", TrackKind::Video));
+        let id = timeline
+            .add_clip(track, Clip::new(MediaRef::new("a.mp4"), seconds(0), seconds(5)))
+            .expect("track exists");
+
+        assert_eq!(plan_frame(&timeline, seconds(1)).layers[0].blend_mode, BlendMode::Normal);
+
+        timeline.clip_mut(id).expect("clip exists").blend_mode = BlendMode::Screen;
+        assert_eq!(plan_frame(&timeline, seconds(1)).layers[0].blend_mode, BlendMode::Screen);
     }
 
     #[test]

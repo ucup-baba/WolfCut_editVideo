@@ -10,6 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::arena::{Arena, Id};
+use crate::blend::BlendMode;
 use crate::time::{FrameRate, Rational, TimeRange};
 
 /// Handle to a [`Track`].
@@ -68,6 +69,11 @@ pub struct Clip {
     pub speed: Rational,
     /// Blend factor in `0.0..=1.0`, applied over whatever is beneath.
     pub opacity: f32,
+    /// How the picture's colour combines with whatever is beneath it.
+    ///
+    /// Orthogonal to `opacity`, and both apply: the mode decides what colour
+    /// the clip contributes, `opacity` decides how much of it lands.
+    pub blend_mode: BlendMode,
     /// Ramp the picture's opacity from zero over this many seconds from the
     /// clip's start. Zero means no ramp.
     ///
@@ -127,6 +133,7 @@ impl Clip {
             duration,
             speed: Rational::ONE,
             opacity: 1.0,
+            blend_mode: BlendMode::Normal,
             video_fade_in: Rational::ZERO,
             video_fade_out: Rational::ZERO,
             transform: Transform::IDENTITY,

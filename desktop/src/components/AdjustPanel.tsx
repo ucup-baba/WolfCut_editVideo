@@ -1,6 +1,6 @@
-import { MAX_SCALE, MIN_SCALE, type Clip } from "../lib/editor";
+import { MAX_SCALE, MIN_SCALE, type BlendMode, type Clip } from "../lib/editor";
 import { t, useLocale } from "../lib/i18n";
-import { Group, Slider, Toggle } from "./controls";
+import { Group, Select, Slider, Toggle } from "./controls";
 import { Icon } from "./Icon";
 import { Empty } from "./Panel";
 
@@ -16,6 +16,35 @@ const MIN_DB = -60;
 const MAX_DB = 24;
 /** A fade longer than half the clip would overlap the other one. */
 const MAX_FADE = 10;
+
+/**
+ * The blend modes, in the order the menu offers them.
+ *
+ * Grouped the way they behave rather than alphabetically or the way the
+ * engine numbers them: normal, then the ones that only darken, the ones that
+ * only lighten, the contrast pair, the two that cancel, and the four that
+ * take a colour apart. Someone reaching for "make this darker" should find
+ * its neighbours next to it.
+ */
+const BLEND_MODES: readonly BlendMode[] = [
+  "normal",
+  "darken",
+  "multiply",
+  "color-burn",
+  "lighten",
+  "screen",
+  "color-dodge",
+  "plus-lighter",
+  "overlay",
+  "soft-light",
+  "hard-light",
+  "difference",
+  "exclusion",
+  "hue",
+  "saturation",
+  "color",
+  "luminosity",
+];
 
 /** Linear gain to decibels. Zero maps to the bottom of the fader, not -inf. */
 function toDecibels(gain: number): number {
@@ -133,6 +162,16 @@ export function AdjustPanel({
             onReset={() => { onChange({ opacity: 1 }); onCommit(); }}
             onChange={(opacity) => onChange({ opacity })}
             onCommit={onCommit}
+          />
+          {/* Committed on selection: picking from a menu is one decision, so
+              it should be one undo step, not the start of a gesture. */}
+          <Select
+            label={t("adjust.blendMode")}
+            hint={t("adjust.blendModeHint")}
+            value={clip.blendMode}
+            options={BLEND_MODES.map((mode) => ({ value: mode, label: t(`blend.${mode}`) }))}
+            onReset={() => { onChange({ blendMode: "normal" }); onCommit(); }}
+            onChange={(blendMode) => { onChange({ blendMode }); onCommit(); }}
           />
         </Group>
       )}

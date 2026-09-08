@@ -37,7 +37,7 @@ mod tests {
     use crate::commands::{ClipMove, ClipPatch, Command, TrackFlag, TrimEdge};
     use crate::doc::DocumentSettings;
     use crate::editor::Editor;
-    use crate::model::{ClipKind, MediaKind, TextStyle};
+    use crate::model::{BlendMode, ClipKind, MediaKind, TextStyle};
 
     fn media(path: &str, duration: f64, has_audio: bool) -> Command {
         Command::AddMedia {
@@ -285,6 +285,73 @@ mod tests {
     }
 
     #[test]
+    fn a_blend_mode_survives_the_document() {
+        let (mut editor, _, clip_id) = fixture();
+        editor
+            .apply(Command::UpdateClip {
+                clip_id: clip_id.clone(),
+                patch: ClipPatch {
+                    blend_mode: Some(BlendMode::Multiply),
+                    ..ClipPatch::default()
+                },
+            })
+            .expect("updates");
+        assert_eq!(editor.project().active().clips[0].blend_mode, BlendMode::Multiply);
+
+        let document = editor.to_document(&settings());
+        assert_eq!(
+            document["clips"][0]["blendMode"],
+            json!("multiply"),
+            "the document says it in CSS's spelling"
+        );
+        let restored = Editor::from_document(&document).expect("loads");
+        assert_eq!(restored.project().active().clips[0].id, clip_id);
+        assert_eq!(restored.project().active().clips[0].blend_mode, BlendMode::Multiply);
+    }
+
+    #[test]
+    fn every_blend_mode_has_its_spelling_on_disk() {
+        // These strings *are* the document format, and the UI's menu is keyed
+        // by them too. Grow this list with the enum: a rename nobody notices
+        // would read back as normal on every project already saved.
+        let spellings = [
+            (BlendMode::Normal, "normal"),
+            (BlendMode::Darken, "darken"),
+            (BlendMode::Multiply, "multiply"),
+            (BlendMode::ColorBurn, "color-burn"),
+            (BlendMode::Lighten, "lighten"),
+            (BlendMode::Screen, "screen"),
+            (BlendMode::PlusLighter, "plus-lighter"),
+            (BlendMode::ColorDodge, "color-dodge"),
+            (BlendMode::Overlay, "overlay"),
+            (BlendMode::SoftLight, "soft-light"),
+            (BlendMode::HardLight, "hard-light"),
+            (BlendMode::Difference, "difference"),
+            (BlendMode::Exclusion, "exclusion"),
+            (BlendMode::Hue, "hue"),
+            (BlendMode::Saturation, "saturation"),
+            (BlendMode::Color, "color"),
+            (BlendMode::Luminosity, "luminosity"),
+        ];
+        for (mode, spelling) in spellings {
+            assert_eq!(serde_json::to_value(mode).expect("serialises"), json!(spelling));
+            let parsed: BlendMode = serde_json::from_value(json!(spelling)).expect("reads");
+            assert_eq!(parsed, mode);
+        }
+    }
+
+    #[test]
+    fn an_unknown_blend_mode_reads_as_normal() {
+        let (editor, _, _) = fixture();
+        let mut document = editor.to_document(&settings());
+        document["clips"][0]["blendMode"] = json!("kaleidoscope");
+        document["timelines"][0]["clips"][0]["blendMode"] = json!("kaleidoscope");
+
+        let restored = Editor::from_document(&document).expect("loads anyway");
+        assert_eq!(restored.project().active().clips[0].blend_mode, BlendMode::Normal);
+    }
+
+    #[test]
     fn a_typescript_written_document_loads() {
         // The exact shape the deleted TS persist layer used to write,
         // optional fields omitted the way JSON.stringify drops undefined -
@@ -318,6 +385,11 @@ mod tests {
         let project = editor.project();
         assert_eq!(project.timelines.len(), 1);
         assert_eq!(project.active().clips[0].video_effects[0].id, "sepia");
+        assert_eq!(
+            project.active().clips[0].blend_mode,
+            BlendMode::Normal,
+            "a document written before blend modes reads as normal"
+        );
     }
 
     #[test]

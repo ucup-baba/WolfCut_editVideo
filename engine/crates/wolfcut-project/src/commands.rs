@@ -11,8 +11,8 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 
 use crate::model::{
-    AppliedFilter, Clip, ClipKind, CustomFont, MediaItem, MediaKind, Project, TextStyle,
-    Timeline, Track, Transition,
+    AppliedFilter, BlendMode, Clip, ClipKind, CustomFont, MediaItem, MediaKind, Project,
+    TextStyle, Timeline, Track, Transition,
 };
 
 /// Fallback length for media whose container reports no duration.
@@ -98,6 +98,10 @@ pub struct ClipPatch {
     /// New opacity, clamped into 0..=1.
     #[cfg_attr(feature = "types", ts(optional))]
     pub opacity: Option<f64>,
+    /// New blend mode, taken as sent. An unknown name fails the whole patch
+    /// at the wire, rather than silently landing as `Normal`.
+    #[cfg_attr(feature = "types", ts(optional))]
+    pub blend_mode: Option<BlendMode>,
     /// New pitch-preservation setting, taken as sent.
     #[cfg_attr(feature = "types", ts(optional))]
     pub preserve_pitch: Option<bool>,
@@ -560,6 +564,7 @@ fn default_clip(id: String, track_id: String, media: &MediaItem, start: f64) -> 
         offset_y: 0.0,
         rotation: 0.0,
         opacity: 1.0,
+        blend_mode: BlendMode::Normal,
         speed: 1.0,
         preserve_pitch: true,
         filters: Vec::new(),
@@ -844,6 +849,7 @@ pub fn apply(
                 offset_y: offset_y.unwrap_or(0.0).clamp(-MAX_OFFSET, MAX_OFFSET),
                 rotation: 0.0,
                 opacity: 1.0,
+                blend_mode: BlendMode::Normal,
                 speed: 1.0,
                 preserve_pitch: true,
                 filters: Vec::new(),
@@ -983,6 +989,9 @@ pub fn apply(
             }
             if let Some(opacity) = patch.opacity {
                 applied |= assign(&mut clip.opacity, opacity.clamp(0.0, 1.0));
+            }
+            if let Some(blend_mode) = patch.blend_mode {
+                applied |= assign(&mut clip.blend_mode, blend_mode);
             }
             if let Some(preserve) = patch.preserve_pitch {
                 applied |= assign(&mut clip.preserve_pitch, preserve);

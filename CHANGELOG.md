@@ -6,6 +6,10 @@ behaviour.
 
 ## Unreleased
 
+- Blend modes: the Adjust tab gives every picture clip the seventeen modes
+  you know from Photoshop and CSS - Multiply, Screen, Overlay, Difference and
+  the rest - applied against whatever sits on the tracks below it. Set on the
+  clip, so it looks the same in the monitor as it does in the export.
 - Text to speech: File → Text to speech turns typed narration into an audio
   clip at the playhead, spoken by one of 36 Kokoro voices (American and
   British English, Chinese) at a chosen pace. Generation runs entirely on

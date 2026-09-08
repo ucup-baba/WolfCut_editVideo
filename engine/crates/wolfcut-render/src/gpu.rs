@@ -13,12 +13,18 @@
 //!   change together.
 //! - Layer quads are sampled bilinearly with clamp-to-edge, matching the CPU
 //!   path's bilinear inverse mapping.
+//! - A frame carrying any layer whose blend mode is not `Normal` is handed to
+//!   the CPU compositor whole. One pass with one fixed-function blend state
+//!   cannot read what it has already drawn, and until this grows the second
+//!   pass that would let it, being slow on those frames beats disagreeing
+//!   with the exporter about what the edit looks like.
 //!
 //! Construction is fallible: a machine with no usable adapter gets `None`, and
 //! callers fall back to the CPU. Never panic over a missing GPU.
 
 use std::collections::HashMap;
 
+use wolfcut_core::BlendMode;
 use wolfcut_core::frame::Frame;
 
 use crate::compositor::{Compositor, CpuCompositor, Layer};
@@ -423,6 +429,14 @@ impl Compositor for WgpuCompositor {
             return CpuCompositor.composite(width, height, layers);
         }
 
+        // Anything but `Normal` needs to read the target this pass is still
+        // drawing into, which a single fixed-function blend state cannot do.
+        // The whole frame goes to the reference rather than losing the mode:
+        // an export must not look different for having found a GPU.
+        if layers.iter().any(|layer| layer.blend_mode != BlendMode::Normal) {
+            return CpuCompositor.composite(width, height, layers);
+        }
+
         self.used.values_mut().for_each(|used| *used = 0);
 
         // Upload every visible layer and build its quad.
@@ -602,6 +616,16 @@ mod tests {
             Layer::new(&half_alpha).with_opacity(0.7),
         ];
         assert_matches_cpu(4, 4, &layers, 2);
+    }
+
+    #[test]
+    fn a_blend_mode_falls_back_to_the_cpu_exactly() {
+        let grey = solid(4, 4, [200, 200, 200, 255]);
+        let dark = solid(4, 4, [64, 64, 64, 255]);
+        let layers = [Layer::new(&grey), Layer::new(&dark).with_blend_mode(BlendMode::Overlay)];
+        // Zero tolerance on purpose: this frame is not drawn on the GPU at
+        // all, so "close enough" would mean the fallback had been lost.
+        assert_matches_cpu(4, 4, &layers, 0);
     }
 
     #[test]

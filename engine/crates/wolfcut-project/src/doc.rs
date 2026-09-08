@@ -14,8 +14,8 @@
 use serde_json::{Map, Value, json};
 
 use crate::model::{
-    AppliedFilter, Clip, ClipKind, CustomFont, MediaItem, MediaKind, Project, TextAlign,
-    TextStyle, Timeline, Track, Transition,
+    AppliedFilter, BlendMode, Clip, ClipKind, CustomFont, MediaItem, MediaKind, Project,
+    TextAlign, TextStyle, Timeline, Track, Transition,
 };
 
 /// Bumped only when a change cannot be absorbed by defaulting.
@@ -31,6 +31,16 @@ fn number(value: Option<&Value>, fallback: f64) -> f64 {
 
 fn flag(value: Option<&Value>, fallback: bool) -> bool {
     value.and_then(Value::as_bool).unwrap_or(fallback)
+}
+
+/// The blend mode named on disk, or `Normal` for anything unrecognised.
+///
+/// Read through serde rather than matched by hand like the smaller enums
+/// above it: the spellings in the document are serde's to decide, and
+/// seventeen hand-written arms would be one rename away from quietly turning
+/// every clip back to `Normal`.
+fn blend_mode(value: Option<&Value>) -> BlendMode {
+    value.and_then(|value| serde_json::from_value(value.clone()).ok()).unwrap_or_default()
 }
 
 fn opt_u32(value: Option<&Value>) -> Option<u32> {
@@ -186,6 +196,7 @@ fn read_clips(raw: Option<&Value>, tracks: &[Track], media: &[MediaItem]) -> Vec
                 // Clamped: a hand-edited 2 would export differently from how
                 // the preview clamps it on screen.
                 opacity: number(entry.get("opacity"), 1.0).clamp(0.0, 1.0),
+                blend_mode: blend_mode(entry.get("blendMode")),
                 speed: number(entry.get("speed"), 1.0).clamp(0.0625, 16.0),
                 preserve_pitch: flag(entry.get("preservePitch"), true),
                 filters: read_filters(entry.get("filters")),

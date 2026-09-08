@@ -8,16 +8,19 @@
 //! - [`arena`] - generational arenas and `Copy` handles, the way WolfCut models
 //!   graphs. See `docs/decisions/0003-arena-handles-not-pointers.md`.
 //! - [`frame`] - a decoded RGBA8 image buffer.
+//! - [`blend`] - how a layer's colour combines with what is beneath it.
 //! - [`timeline`] - projects, tracks and clips.
 //!
 //! If you are about to add a dependency to this crate, the thing you are adding
 //! probably belongs in `wolfcut-media` or `wolfcut-render` instead.
 
 pub mod arena;
+pub mod blend;
 pub mod frame;
 pub mod time;
 pub mod timeline;
 
+pub use blend::BlendMode;
 pub use frame::Frame;
 pub use time::{FrameRate, Rational, TimeRange};
 pub use timeline::{Clip, ClipId, Project, Timeline, Track, TrackId, TrackKind};

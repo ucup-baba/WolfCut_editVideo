@@ -5,7 +5,10 @@
 //! checking the GPU path's output. The `Compositor` trait is the seam that
 //! `wgpu` will slot into.
 
+use wolfcut_core::BlendMode;
 use wolfcut_core::frame::{BYTES_PER_PIXEL, Frame};
+
+use crate::blend::blend_rgb;
 
 /// A layer's placement beyond its base position, in output pixels.
 ///
@@ -55,12 +58,23 @@ pub struct Layer<'a> {
     pub y: i32,
     /// Scale, rotation and translation about the layer's centre.
     pub placement: Placement,
+    /// How this layer's colour combines with what is beneath it. Orthogonal
+    /// to `opacity`: the mode decides what colour lands, `opacity` decides
+    /// how much of it does.
+    pub blend_mode: BlendMode,
 }
 
 impl<'a> Layer<'a> {
     /// A layer drawn at the origin, fully opaque.
     pub fn new(frame: &'a Frame) -> Self {
-        Self { frame, opacity: 1.0, x: 0, y: 0, placement: Placement::IDENTITY }
+        Self {
+            frame,
+            opacity: 1.0,
+            x: 0,
+            y: 0,
+            placement: Placement::IDENTITY,
+            blend_mode: BlendMode::Normal,
+        }
     }
 
     /// Sets the blend strength.
@@ -81,6 +95,12 @@ impl<'a> Layer<'a> {
         self.placement = placement;
         self
     }
+
+    /// Sets how the layer's colour combines with what is beneath it.
+    pub fn with_blend_mode(mut self, blend_mode: BlendMode) -> Self {
+        self.blend_mode = blend_mode;
+        self
+    }
 }
 
 /// Blends layers into a single output frame.
@@ -90,6 +110,15 @@ pub trait Compositor {
     /// Layers may hang off any edge; anything outside the output is clipped.
     /// The result is always fully opaque - it is what goes to screen or to an
     /// encoder, and neither has anything to show through.
+    ///
+    /// Every implementation must honour each layer's
+    /// [`BlendMode`](wolfcut_core::BlendMode), taking a slower path rather
+    /// than ignoring one: what an export looks like must not depend on which
+    /// backend the machine could offer.
+    ///
+    /// The background is opaque black, so a darkening mode on the bottom-most
+    /// layer really does blend against black. That is what every other editor
+    /// does too, and it is why such a mode belongs on an upper track.
     fn composite(&mut self, width: u32, height: u32, layers: &[Layer<'_>]) -> Frame;
 }
 
@@ -128,6 +157,7 @@ impl Compositor for CpuCompositor {
                 (src_x, src_y),
                 (columns, rows),
                 opacity,
+                layer.blend_mode,
             );
         }
 
@@ -145,6 +175,7 @@ impl Compositor for CpuCompositor {
 fn blend_transformed(output: &mut Frame, layer: &Layer<'_>, opacity: f32) {
     let source = layer.frame;
     let placement = layer.placement;
+    let blend_mode = layer.blend_mode;
     let scale = placement.scale.max(1e-6);
     let (sin, cos) = placement.rotation.sin_cos();
 
@@ -212,8 +243,13 @@ fn blend_transformed(output: &mut Frame, layer: &Layer<'_>, opacity: f32) {
             }
 
             let at = y as usize * dst_stride + x as usize * BYTES_PER_PIXEL;
+            let colour = blended_source(
+                [sample[0], sample[1], sample[2]],
+                [dst_pixels[at], dst_pixels[at + 1], dst_pixels[at + 2]],
+                blend_mode,
+            );
             for channel in 0..3 {
-                let over = sample[channel] * alpha;
+                let over = colour[channel] * alpha;
                 let under = f32::from(dst_pixels[at + channel]) * (1.0 - alpha);
                 dst_pixels[at + channel] = (over + under).round().clamp(0.0, 255.0) as u8;
             }
@@ -239,7 +275,32 @@ fn overlap(offset: i32, source: u32, destination: u32) -> Option<(u32, u32, u32)
     (count > 0).then_some((dst_start as u32, src_start as u32, count as u32))
 }
 
+/// The colour a layer contributes at one pixel, in `0..=255`, once `mode` has
+/// combined it with what is already beneath it.
+///
+/// All three destination channels are read before any of them is written: a
+/// blend mode looks at the colour underneath as a whole, and mixing channel by
+/// channel against a half-updated pixel would be a quiet, ugly bug.
+///
+/// [`BlendMode::Normal`] is the overwhelmingly common case and skips the trip
+/// through normalised floats entirely. This runs once per pixel per layer, so
+/// the fast path is worth having.
+fn blended_source(source: [f32; 3], destination: [u8; 3], mode: BlendMode) -> [f32; 3] {
+    if mode == BlendMode::Normal {
+        return source;
+    }
+    let base = destination.map(|channel| f32::from(channel) / 255.0);
+    let layer = source.map(|channel| (channel / 255.0).clamp(0.0, 1.0));
+    blend_rgb(base, layer, mode).map(|channel| channel * 255.0)
+}
+
 /// Source-over alpha blend of an aligned rectangle.
+///
+/// The shader this ports from weighs the blended colour by the destination's
+/// alpha as well as the source's. Here the destination is always opaque - the
+/// output starts as [`Frame::black`] and every pixel written ends fully
+/// opaque - which collapses that to the plain source-over below. Break that
+/// invariant and this arithmetic silently becomes wrong.
 fn blend_region(
     output: &mut Frame,
     source: &Frame,
@@ -247,6 +308,7 @@ fn blend_region(
     (src_x, src_y): (u32, u32),
     (columns, rows): (u32, u32),
     opacity: f32,
+    blend_mode: BlendMode,
 ) {
     let src_stride = source.width() as usize * BYTES_PER_PIXEL;
     let dst_stride = output.width() as usize * BYTES_PER_PIXEL;
@@ -269,8 +331,13 @@ fn blend_region(
             if alpha <= 0.0 {
                 continue;
             }
+            let colour = blended_source(
+                [f32::from(src_pixel[0]), f32::from(src_pixel[1]), f32::from(src_pixel[2])],
+                [dst_pixel[0], dst_pixel[1], dst_pixel[2]],
+                blend_mode,
+            );
             for channel in 0..3 {
-                let over = f32::from(src_pixel[channel]) * alpha;
+                let over = colour[channel] * alpha;
                 let under = f32::from(dst_pixel[channel]) * (1.0 - alpha);
                 dst_pixel[channel] = (over + under).round().clamp(0.0, 255.0) as u8;
             }
@@ -395,6 +462,99 @@ mod tests {
         let frame = CpuCompositor.composite(2, 2, &[Layer::new(&red).with_placement(placement)]);
         assert_eq!(frame.width(), 2);
         assert_eq!(frame.pixel(1, 1), Some([255, 0, 0, 255]));
+    }
+
+    #[test]
+    fn multiply_darkens_against_the_layer_beneath() {
+        let grey = solid(1, 1, [200, 200, 200, 255]);
+        let half = solid(1, 1, [128, 128, 128, 255]);
+        let frame = CpuCompositor.composite(
+            1,
+            1,
+            &[Layer::new(&grey), Layer::new(&half).with_blend_mode(BlendMode::Multiply)],
+        );
+        // 200/255 * 128/255, back in bytes, is 100.4.
+        assert_eq!(frame.pixel(0, 0), Some([100, 100, 100, 255]));
+    }
+
+    #[test]
+    fn a_white_multiply_layer_changes_nothing() {
+        let red = solid(1, 1, [255, 0, 0, 255]);
+        let white = solid(1, 1, [255, 255, 255, 255]);
+        let frame = CpuCompositor.composite(
+            1,
+            1,
+            &[Layer::new(&red), Layer::new(&white).with_blend_mode(BlendMode::Multiply)],
+        );
+        assert_eq!(frame.pixel(0, 0), Some([255, 0, 0, 255]));
+    }
+
+    #[test]
+    fn the_bottom_most_layer_blends_against_the_black_background() {
+        let grey = solid(1, 1, [200, 200, 200, 255]);
+        let layers = [Layer::new(&grey).with_blend_mode(BlendMode::Multiply)];
+        let frame = CpuCompositor.composite(1, 1, &layers);
+        assert_eq!(frame.pixel(0, 0), Some([0, 0, 0, 255]), "there is only black beneath it");
+    }
+
+    #[test]
+    fn difference_cancels_a_layer_against_itself() {
+        let colour = solid(1, 1, [90, 140, 210, 255]);
+        let frame = CpuCompositor.composite(
+            1,
+            1,
+            &[Layer::new(&colour), Layer::new(&colour).with_blend_mode(BlendMode::Difference)],
+        );
+        assert_eq!(frame.pixel(0, 0), Some([0, 0, 0, 255]));
+    }
+
+    #[test]
+    fn overlay_and_hard_light_are_not_each_other() {
+        let grey = solid(1, 1, [200, 200, 200, 255]);
+        let dark = solid(1, 1, [64, 64, 64, 255]);
+        let through = |mode: BlendMode| {
+            CpuCompositor
+                .composite(1, 1, &[Layer::new(&grey), Layer::new(&dark).with_blend_mode(mode)])
+                .pixel(0, 0)
+        };
+        // The light picture beneath decides for overlay, the dark layer for
+        // hard light, so the same pair of colours lands far apart.
+        assert_eq!(through(BlendMode::Overlay), Some([173, 173, 173, 255]));
+        assert_eq!(through(BlendMode::HardLight), Some([100, 100, 100, 255]));
+    }
+
+    #[test]
+    fn opacity_still_weighs_a_blended_layer() {
+        let white = solid(1, 1, [255, 255, 255, 255]);
+        let black = solid(1, 1, [0, 0, 0, 255]);
+        // Multiplying by black gives black; at half strength that lands half
+        // way down from the white beneath.
+        let frame = CpuCompositor.composite(
+            1,
+            1,
+            &[
+                Layer::new(&white),
+                Layer::new(&black).with_opacity(0.5).with_blend_mode(BlendMode::Multiply),
+            ],
+        );
+        assert_eq!(frame.pixel(0, 0), Some([128, 128, 128, 255]));
+    }
+
+    #[test]
+    fn a_transformed_layer_blends_too() {
+        let grey = solid(2, 2, [200, 200, 200, 255]);
+        let half = solid(2, 2, [128, 128, 128, 255]);
+        let placement = Placement { scale: 2.0, ..Placement::IDENTITY };
+        let frame = CpuCompositor.composite(
+            2,
+            2,
+            &[
+                Layer::new(&grey),
+                Layer::new(&half).with_placement(placement).with_blend_mode(BlendMode::Multiply),
+            ],
+        );
+        assert_eq!(frame.pixel(0, 0), Some([100, 100, 100, 255]));
+        assert_eq!(frame.pixel(1, 1), Some([100, 100, 100, 255]));
     }
 
     #[test]

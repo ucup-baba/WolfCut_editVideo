@@ -13,7 +13,10 @@ gpu = ["wolfcut-render/gpu"]
 # TypeScript bindings for the wire types the UI sends (rasterised title
 # overlays ride the export request as ExportClips). Off by default; see
 # desktop/src/lib/generated/README.md for the generator command.
-types = ["dep:ts-rs"]
+#
+# Pulls wolfcut-project's bindings in with it: ExportClip carries that
+# crate's `BlendMode`, which has to be a `TS` type for ExportClip to be one.
+types = ["dep:ts-rs", "wolfcut-project/types"]
 
 [dependencies]
 wolfcut-core.workspace = true

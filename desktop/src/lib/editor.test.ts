@@ -38,6 +38,7 @@ function clip(overrides: Partial<Clip> = {}): Clip {
     offsetY: 0,
     rotation: 0,
     opacity: 1,
+    blendMode: "normal",
     speed: 1,
     preservePitch: true,
     filters: [],

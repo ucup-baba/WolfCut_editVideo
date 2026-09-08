@@ -238,6 +238,55 @@ impl Default for TextStyle {
     }
 }
 
+/// How a clip's colour combines with the picture beneath it - the document's
+/// half of `wolfcut_core::BlendMode`, spelled the way CSS spells these
+/// because that is what a value on disk should read as. The arithmetic lives
+/// in `wolfcut-render`; this crate only records which one the user asked for,
+/// and the two enums are kept in step by hand - the price of `wolfcut-core`
+/// carrying no serde.
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "types", derive(ts_rs::TS))]
+#[cfg_attr(feature = "types", ts(export))]
+#[serde(rename_all = "kebab-case")]
+pub enum BlendMode {
+    /// Covers what is beneath, weighted by opacity. The default.
+    #[default]
+    Normal,
+    /// Keeps the darker of the two, per channel.
+    Darken,
+    /// Multiplies the two. Never lightens.
+    Multiply,
+    /// Darkens beneath in proportion to how dark the clip is.
+    ColorBurn,
+    /// Keeps the lighter of the two, per channel.
+    Lighten,
+    /// Multiplies the inverses. Never darkens.
+    Screen,
+    /// Plain addition, clipped at white.
+    PlusLighter,
+    /// Brightens beneath in proportion to how light the clip is.
+    ColorDodge,
+    /// Multiplies the darks and screens the lights, the picture beneath
+    /// deciding which.
+    Overlay,
+    /// [`Overlay`](Self::Overlay)'s gentler curve, which never clips.
+    SoftLight,
+    /// [`Overlay`](Self::Overlay) with the clip deciding instead.
+    HardLight,
+    /// The absolute difference; identical pictures give black.
+    Difference,
+    /// [`Difference`](Self::Difference) with less contrast.
+    Exclusion,
+    /// The clip's hue over the saturation and brightness beneath.
+    Hue,
+    /// The clip's saturation over the hue and brightness beneath.
+    Saturation,
+    /// The clip's hue and saturation over the brightness beneath.
+    Color,
+    /// The clip's brightness over the colour beneath.
+    Luminosity,
+}
+
 /// One placed piece of a timeline: a stretch of media (or a title) with its
 /// timing, mix, transform, and effects. Everything an edit decision touches
 /// lives here, which is why most commands are clip commands.
@@ -283,6 +332,10 @@ pub struct Clip {
     pub rotation: f64,
     /// Blend strength over whatever is beneath, in 0..1.
     pub opacity: f64,
+    /// How the picture combines with what is beneath it. Defaulted, so a
+    /// document written before blend modes existed reads as `Normal`.
+    #[serde(default)]
+    pub blend_mode: BlendMode,
     /// Playback rate. 1 is normal.
     pub speed: f64,
     /// Keep voices at their natural pitch when `speed` is not 1. On by

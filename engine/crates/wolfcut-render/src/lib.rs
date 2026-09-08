@@ -9,7 +9,11 @@
 //!
 //! Only step 2 is backend-specific. See
 //! `docs/decisions/0004-cpu-compositor-first.md`.
+//!
+//! [`blend`] sits underneath step 2: the colour arithmetic each backend has to
+//! agree on, kept away from the pixel plumbing so it can be tested on numbers.
 
+pub mod blend;
 pub mod compositor;
 #[cfg(feature = "gpu")]
 pub mod gpu;

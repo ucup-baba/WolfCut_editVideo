@@ -236,6 +236,64 @@ export function Slider({
 }
 
 /**
+ * A labelled dropdown.
+ *
+ * A native `<select>`, unlike Toggle's hand-built switch: a list of names is
+ * what the platform control is for, and its popup, type-to-search and touch
+ * behaviour are all things a styled `<div>` would have to rebuild badly. Only
+ * the closed state is skinned, which is as far as CSS reaches anyway.
+ */
+export function Select<T extends string>({
+  label,
+  hint,
+  value,
+  options,
+  onChange,
+  onReset,
+}: {
+  label: string;
+  /** Shown behind a help icon, not inline - panels stay controls-first. */
+  hint?: string;
+  value: T;
+  /** In the order they should be offered; `label` is what the reader sees. */
+  options: readonly { value: T; label: string }[];
+  onChange: (value: T) => void;
+  /** Double-clicking the label returns the control to this value. */
+  onReset?: () => void;
+}) {
+  const { t } = useLocale();
+
+  return (
+    <div className="mb-3">
+      <span className="mb-1 flex min-w-0 items-center gap-1.5">
+        <span
+          onDoubleClick={onReset}
+          title={onReset ? t("controls.resetHint") : undefined}
+          className={`truncate text-[12px] text-secondary ${onReset ? "cursor-pointer" : ""}`}
+        >
+          {label}
+        </span>
+        {hint && <HelpTip text={hint} />}
+      </span>
+
+      <select
+        value={value}
+        aria-label={label}
+        onChange={(event) => onChange(event.target.value as T)}
+        className="h-6 w-full cursor-pointer rounded-md border border-hairline bg-sunken px-1.5
+                   text-[12px] text-primary outline-none transition-colors focus:border-accent"
+      >
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+/**
  * A sliding on/off switch.
  *
  * A real `<button role="switch">` rather than a native checkbox: the platform
