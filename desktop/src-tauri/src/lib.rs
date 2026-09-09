@@ -704,11 +704,12 @@ async fn preview_frame(
     editor: tauri::State<'_, editor_api::EditorState>,
     request: PreviewSpec,
 ) -> Result<tauri::ipc::Response, String> {
-    let (clips, _effects, settings) = editor_api::flattened_clips(&editor)?;
+    let (clips, effects, settings) = editor_api::flattened_clips(&editor)?;
     let request = export::PreviewFrameRequest {
         time: request.time,
         width: request.width,
         height: request.height,
+        effects,
         rate_num: settings.rate_num,
         rate_den: settings.rate_den,
         clips,
@@ -739,11 +740,12 @@ async fn preview_prefetch(
     request: PreviewSpec,
     frames: u32,
 ) -> Result<(), String> {
-    let (clips, _effects, settings) = editor_api::flattened_clips(&editor)?;
+    let (clips, effects, settings) = editor_api::flattened_clips(&editor)?;
     let request = export::PreviewFrameRequest {
         time: request.time,
         width: request.width,
         height: request.height,
+        effects,
         rate_num: settings.rate_num,
         rate_den: settings.rate_den,
         clips,

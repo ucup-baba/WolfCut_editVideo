@@ -87,6 +87,79 @@ pub fn effect_graph(effects: &[TimelineEffect]) -> Option<String> {
     Some(graph)
 }
 
+/// The graph for one instant, with every weight already worked out.
+///
+/// The timeline graph is written in `T`, and a single frame handed to FFmpeg
+/// on a pipe arrives at `t = 0` however far into the edit it came from - so
+/// the ramps would all read as "not started yet". Rather than patch that, the
+/// weight is evaluated here and baked in as a number, which is both correct
+/// and cheaper: no expression is evaluated per pixel.
+///
+/// `None` when nothing covers `time`, which is the common case and means the
+/// frame needs no second pass at all.
+pub fn effect_graph_at(effects: &[TimelineEffect], time: f64) -> Option<String> {
+    let mut stages: Vec<String> = Vec::new();
+    let mut carried = String::new();
+
+    for effect in effects {
+        if !effect.enabled || time < effect.start || time > effect.end() {
+            continue;
+        }
+        let weight = weight_at(effect, time);
+        if weight <= 0.0 {
+            continue;
+        }
+        let chain = video_effect_chain(&[AppliedFilter {
+            id: effect.effect_id.clone(),
+            params: effect.params.clone(),
+            enabled: true,
+        }]);
+        if chain.is_empty() || wolfcut_media::audio::validate_chain(&chain).is_err() {
+            continue;
+        }
+
+        let index = stages.len();
+        let (clean, source, filtered) =
+            (format!("c{index}"), format!("s{index}"), format!("f{index}"));
+        let out = format!("o{index}");
+        stages.push(format!(
+            "{carried}split[{clean}][{source}];\
+             [{source}]{chain}[{filtered}];\
+             [{clean}][{filtered}]blend=all_expr='A*{clean_share:.6}+B*{weight:.6}'[{out}]",
+            carried = if carried.is_empty() { String::new() } else { format!("[{carried}]") },
+            clean_share = 1.0 - weight,
+        ));
+        carried = out;
+    }
+
+    if stages.is_empty() {
+        return None;
+    }
+    let mut graph = stages.join(";");
+    let tail = format!("[{carried}]");
+    graph.truncate(graph.len() - tail.len());
+    Some(graph)
+}
+
+/// The ramp weight at one instant, in `0.0..=1.0`.
+///
+/// The same shape the timeline graph's expression describes, evaluated in
+/// Rust instead of by FFmpeg - the two have to agree, so this is the one
+/// place worth reading twice.
+fn weight_at(effect: &TimelineEffect, time: f64) -> f64 {
+    let rise = if effect.ease_in > 0.0 {
+        ((time - effect.start) / effect.ease_in).clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    let fall = if effect.ease_out > 0.0 {
+        ((effect.end() - time) / effect.ease_out).clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    rise.min(fall)
+}
+
 /// How much of the filtered branch to show, as an expression in `T`.
 ///
 /// `A` is the clean picture and `B` the filtered one, so a weight of zero is
@@ -200,6 +273,41 @@ mod tests {
         assert!(graph.contains("[o0]split[c1][s1]"), "{graph}");
         assert!(!graph.ends_with("[o1]"), "the graph must end unlabelled: {graph}");
         assert_eq!(graph.matches("blend=").count(), 2);
+    }
+
+    #[test]
+    fn an_instant_outside_every_effect_needs_no_pass() {
+        let laid = [effect(2.0, 2.0)];
+        assert_eq!(effect_graph_at(&laid, 1.0), None, "before it");
+        assert_eq!(effect_graph_at(&laid, 5.0), None, "after it");
+        assert!(effect_graph_at(&laid, 3.0).is_some(), "inside it");
+    }
+
+    #[test]
+    fn an_instant_bakes_the_weight_in_rather_than_leaving_an_expression() {
+        let laid = [TimelineEffect { ease_in: 2.0, ..effect(0.0, 4.0) }];
+        let graph = effect_graph_at(&laid, 1.0).expect("a graph");
+        // One second into a two-second ramp is half way up.
+        assert!(graph.contains("all_expr='A*0.500000+B*0.500000'"), "{graph}");
+        assert!(!graph.contains('T'), "no expression should survive: {graph}");
+        assert!(!graph.contains("enable="), "the instant is the gate: {graph}");
+    }
+
+    #[test]
+    fn the_instant_weight_matches_the_ramp_the_timeline_graph_describes() {
+        let laid = TimelineEffect { ease_in: 1.0, ease_out: 1.0, ..effect(0.0, 4.0) };
+        // The corners, where the two definitions are easiest to get wrong.
+        assert_eq!(weight_at(&laid, 0.0), 0.0, "nothing at the very start");
+        assert_eq!(weight_at(&laid, 0.5), 0.5, "half way up");
+        assert_eq!(weight_at(&laid, 2.0), 1.0, "full across the middle");
+        assert_eq!(weight_at(&laid, 3.5), 0.5, "half way down");
+        assert_eq!(weight_at(&laid, 4.0), 0.0, "nothing at the very end");
+    }
+
+    #[test]
+    fn a_zero_weight_instant_is_no_pass_at_all() {
+        let laid = [TimelineEffect { ease_in: 1.0, ..effect(0.0, 4.0) }];
+        assert_eq!(effect_graph_at(&laid, 0.0), None, "the ramp has not started");
     }
 
     #[test]

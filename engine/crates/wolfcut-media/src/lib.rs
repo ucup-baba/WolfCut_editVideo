@@ -13,6 +13,7 @@ pub mod audio;
 pub mod binaries;
 pub mod decode;
 pub mod encode;
+pub mod filter;
 #[cfg(feature = "ffi")]
 pub mod ffi;
 pub mod error;
@@ -25,6 +26,7 @@ mod process;
 pub use binaries::{ffmpeg, ffprobe, set_binaries};
 pub use decode::{DecodeOptions, FfmpegDecoder, FrameSource, SeekableSource};
 pub use encode::{EncodeOptions, FfmpegEncoder, FrameSink};
+pub use filter::filter_frame;
 pub use error::{Error, Result};
 pub use peaks::Peaks;
 pub use pool::{FrameCache, ReaderPool};

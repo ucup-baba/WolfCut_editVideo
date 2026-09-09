@@ -770,6 +770,9 @@ pub struct PreviewFrameRequest {
     pub rate_den: i64,
     /// The flattened clip list, exactly as an export would take it.
     pub clips: Vec<ExportClip>,
+    /// Effects laid over the picture, exactly as an export would take them.
+    #[serde(default)]
+    pub effects: Vec<wolfcut_project::model::TimelineEffect>,
 }
 
 /// Composites the true frame at one instant, for the paused monitor.
@@ -845,7 +848,23 @@ pub fn preview_frame(
     // CPU on purpose: one frame at preview size is milliseconds, and holding
     // a GPU context alive for occasional scrubs is not worth its memory.
     let composed = CpuCompositor.composite(request.width, request.height, &layers);
-    Ok(composed.into_pixels())
+    let pixels = composed.into_pixels();
+
+    // Then the timeline's own effects, at this instant. The exporter lays
+    // these on at the encoder, where FFmpeg sees the stream and `t` means
+    // something; one frame on a pipe always arrives at zero, so the weight is
+    // worked out here and baked in. Nothing covering this instant means no
+    // second pass, which is the common case.
+    let Some(graph) = effects::effect_graph_at(&request.effects, request.time) else {
+        return Ok(pixels);
+    };
+    // A failure here loses the effect, not the frame: the monitor showing the
+    // picture un-effected beats it showing nothing while an export would
+    // still be right.
+    Ok(
+        wolfcut_media::filter_frame(&pixels, request.width, request.height, &graph)
+            .unwrap_or(pixels),
+    )
 }
 
 /// The preview's timeline, built the exporter's way.
@@ -996,6 +1015,7 @@ mod tests {
             rate_num: 30,
             rate_den: 1,
             clips: vec![request_clip],
+            effects: Vec::new(),
         };
 
         let mut pool = wolfcut_media::ReaderPool::new(16 * 1024 * 1024, 2);
@@ -1020,6 +1040,7 @@ mod tests {
             rate_num: 30,
             rate_den: 1,
             clips: vec![outliving],
+            effects: Vec::new(),
         };
         let bytes = preview_frame(&mut pool, &late).expect("previews past the media's end");
         assert!(
@@ -1043,6 +1064,7 @@ mod tests {
             rate_num: 30,
             rate_den: 1,
             clips: vec![effected],
+            effects: Vec::new(),
         };
         let bytes = preview_frame(&mut pool, &filtered).expect("previews with a chain");
         assert!(
