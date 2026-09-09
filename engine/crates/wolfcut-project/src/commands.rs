@@ -237,7 +237,9 @@ pub enum Command {
     },
     /// [`Command::AddClip`] without naming a lane: lands on the lowest
     /// track with nothing in the clip's span, falling back to the bottom
-    /// track (overlap and all) rather than refusing.
+    /// track rather than refusing. That fallback is an overwrite, like every
+    /// other placement - it used to leave the two clips stacked, which the
+    /// renderer could only answer by showing one and mixing both.
     AddClipAtFirstFree {
         /// The bin item to cut from.
         media_id: String,
@@ -269,6 +271,10 @@ pub enum Command {
     /// Repositions any number of clips in one edit - one undo step for a
     /// whole multi-selection drag. Unknown clips and tracks are tolerated
     /// per [`ClipMove`].
+    ///
+    /// Landing on an occupied stretch of a lane overwrites it: see [`carve`].
+    /// The clips being moved never carve each other, so dragging a selection
+    /// through its own footprint is safe.
     MoveClips {
         /// Where each clip is going.
         moves: Vec<ClipMove>,
@@ -656,6 +662,89 @@ pub fn why_not_merge(timeline: &Timeline, clip_ids: &[String]) -> Option<String>
 /// This is how command arms notice a field being set to the value it already
 /// holds - which must count as "nothing happened" ([`Outcome::applied`]
 /// false), or the undo history would record phantom edits.
+/// Cuts a span out of the other clips on one lane, so placing a clip is an
+/// overwrite edit rather than a stacking one.
+///
+/// Two clips claiming the same instant on one lane is a state the renderer
+/// cannot honour, and it does not fail loudly: `clip_on_track_at` shows the
+/// last-added one while the audio graph mixes every clip it finds, so the
+/// edit comes out as one picture over two soundtracks. The engine's own note
+/// on that function says clips "are not supposed to overlap" - nothing until
+/// now made that true.
+///
+/// A clip the newcomer covers whole gives way entirely; one it covers at an
+/// edge is trimmed back, its in-point following a head trim the way
+/// [`Command::TrimClip`] moves it; one the newcomer lands inside is split so
+/// the parts either side both survive. A remainder too short to be a clip is
+/// dropped rather than left as a sliver nobody can grab.
+///
+/// `keep` is the clips doing the placing - a multi-selection drag arrives as
+/// one move, and its members must not carve each other up.
+fn carve(
+    timeline: &mut Timeline,
+    mint: &mut IdMint,
+    track_id: &str,
+    keep: &HashSet<String>,
+    (from, to): (f64, f64),
+) -> bool {
+    if to - from <= 0.0 {
+        return false;
+    }
+    let mut changed = false;
+    let mut index = 0;
+
+    while index < timeline.clips.len() {
+        let clip = &timeline.clips[index];
+        let (start, end) = (clip.start, clip.start + clip.duration);
+        if clip.track_id != track_id || keep.contains(&clip.id) || end <= from || start >= to {
+            index += 1;
+            continue;
+        }
+
+        let head = from - start;
+        let tail = end - to;
+        let keeps_head = head >= MIN_CLIP_DURATION;
+        let keeps_tail = tail >= MIN_CLIP_DURATION;
+
+        if keeps_head && keeps_tail {
+            // The newcomer landed inside: the far side becomes its own clip,
+            // its in-point advanced past everything the newcomer covers.
+            let mut rest = clip.clone();
+            rest.id = mint.next("c");
+            rest.start = to;
+            rest.duration = tail;
+            rest.source_start = clip.source_start + (to - start) * clip.speed;
+            // The transition belongs to the cut at the original start, which
+            // the head keeps - the same rule a split follows.
+            rest.transition_in = None;
+            timeline.clips[index].duration = head;
+            timeline.clips.insert(index + 1, rest);
+            index += 2;
+        } else if keeps_head {
+            timeline.clips[index].duration = head;
+            index += 1;
+        } else if keeps_tail {
+            let clip = &mut timeline.clips[index];
+            clip.source_start += (to - clip.start) * clip.speed;
+            clip.start = to;
+            clip.duration = tail;
+            index += 1;
+        } else {
+            timeline.clips.remove(index);
+        }
+        changed = true;
+    }
+    changed
+}
+
+/// [`carve`] for one clip that has just been placed, found by id.
+fn carve_around(timeline: &mut Timeline, mint: &mut IdMint, clip_id: &str) -> bool {
+    let Some(clip) = timeline.clip(clip_id) else { return false };
+    let (track_id, span) = (clip.track_id.clone(), (clip.start, clip.start + clip.duration));
+    let keep = HashSet::from([clip_id.to_owned()]);
+    carve(timeline, mint, &track_id, &keep, span)
+}
+
 fn assign<T: PartialEq>(slot: &mut T, value: T) -> bool {
     if *slot == value {
         false
@@ -801,6 +890,7 @@ pub fn apply(
             }
             let id = mint.next("c");
             timeline.clips.push(default_clip(id.clone(), track_id, &media, start));
+            carve_around(timeline, mint, &id);
             Ok(Outcome { created_id: Some(id), applied: true })
         }
 
@@ -818,6 +908,7 @@ pub fn apply(
                 first_free_track(timeline, start, duration).ok_or(CommandError::NoTracks)?;
             let id = mint.next("c");
             timeline.clips.push(default_clip(id.clone(), track_id, &media, start));
+            carve_around(timeline, mint, &id);
             Ok(Outcome { created_id: Some(id), applied: true })
         }
 
@@ -859,6 +950,7 @@ pub fn apply(
                 transition_in: None,
                 text: Some(style),
             });
+            carve_around(timeline, mint, &id);
             Ok(Outcome { created_id: Some(id), applied: true })
         }
 
@@ -867,13 +959,28 @@ pub fn apply(
             let track_ids: HashSet<String> =
                 timeline.tracks.iter().map(|track| track.id.clone()).collect();
             let mut applied = false;
+            let mut moved: HashSet<String> = HashSet::new();
             for wanted in moves {
                 if let Some(clip) = timeline.clip_mut(&wanted.clip_id) {
                     applied |= assign(&mut clip.start, wanted.start.max(0.0));
                     if track_ids.contains(&wanted.track_id) {
                         applied |= assign(&mut clip.track_id, wanted.track_id);
                     }
+                    moved.insert(wanted.clip_id);
                 }
+            }
+
+            // After every move has landed, not during: a multi-selection drag
+            // is one gesture, and its members must not carve each other on
+            // the way past. `moved` is the whole selection, so only what the
+            // selection came to rest on gives way.
+            let spans: Vec<(String, (f64, f64))> = moved
+                .iter()
+                .filter_map(|id| timeline.clip(id))
+                .map(|clip| (clip.track_id.clone(), (clip.start, clip.start + clip.duration)))
+                .collect();
+            for (track_id, span) in spans {
+                applied |= carve(timeline, mint, &track_id, &moved, span);
             }
             Ok(Outcome { created_id: None, applied })
         }

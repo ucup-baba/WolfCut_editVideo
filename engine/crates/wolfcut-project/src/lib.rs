@@ -284,6 +284,176 @@ mod tests {
         assert_eq!(restored.project(), editor.project());
     }
 
+    /// A clip of `length` seconds parked on `track`, ready to be dropped
+    /// somewhere. Built on a lane of its own so placing it carves nothing.
+    fn spare_clip(editor: &mut Editor, media_id: &str, track: &str, length: f64) -> String {
+        let id = editor
+            .apply(Command::AddClip {
+                media_id: media_id.to_owned(),
+                track_id: track.to_owned(),
+                start: 0.0,
+            })
+            .expect("adds")
+            .created_id
+            .expect("id");
+        editor
+            .apply(Command::TrimClip {
+                clip_id: id.clone(),
+                edge: TrimEdge::End,
+                delta: length - 10.0,
+            })
+            .expect("trims");
+        id
+    }
+
+    fn span_of(editor: &Editor, clip_id: &str) -> (f64, f64) {
+        let clip = editor
+            .project()
+            .active()
+            .clips
+            .iter()
+            .find(|clip| clip.id == clip_id)
+            .expect("clip exists");
+        (clip.start, clip.duration)
+    }
+
+    #[test]
+    fn a_clip_dropped_on_another_trims_what_it_lands_on() {
+        let (mut editor, media_id, first) = fixture(); // T1, 0..10
+        let lanes: Vec<String> =
+            editor.project().active().tracks.iter().map(|track| track.id.clone()).collect();
+        let second = spare_clip(&mut editor, &media_id, &lanes[1], 10.0);
+
+        editor
+            .apply(Command::MoveClips {
+                moves: vec![ClipMove {
+                    clip_id: second.clone(),
+                    start: 6.0,
+                    track_id: lanes[0].clone(),
+                }],
+            })
+            .expect("moves");
+
+        assert_eq!(span_of(&editor, &first), (0.0, 6.0), "the one beneath gives way");
+        assert_eq!(span_of(&editor, &second), (6.0, 10.0), "the one placed is untouched");
+        assert_eq!(editor.project().active().clips.len(), 2);
+    }
+
+    #[test]
+    fn a_clip_dropped_inside_another_splits_it() {
+        let (mut editor, media_id, first) = fixture(); // T1, 0..10
+        let lanes: Vec<String> =
+            editor.project().active().tracks.iter().map(|track| track.id.clone()).collect();
+        let second = spare_clip(&mut editor, &media_id, &lanes[1], 2.0);
+
+        editor
+            .apply(Command::MoveClips {
+                moves: vec![ClipMove {
+                    clip_id: second.clone(),
+                    start: 4.0,
+                    track_id: lanes[0].clone(),
+                }],
+            })
+            .expect("moves");
+
+        assert_eq!(span_of(&editor, &first), (0.0, 4.0), "the head keeps the original id");
+        assert_eq!(span_of(&editor, &second), (4.0, 2.0));
+
+        let tail = editor
+            .project()
+            .active()
+            .clips
+            .iter()
+            .find(|clip| clip.id != first && clip.id != second)
+            .expect("the far side survives as its own clip");
+        assert_eq!((tail.start, tail.duration), (6.0, 4.0));
+        // The in-point has to advance past everything the newcomer covers, or
+        // the tail would replay frames the head already showed.
+        assert_eq!(tail.source_start, 6.0);
+        assert_eq!(tail.transition_in, None, "the cut it belonged to is the head's");
+    }
+
+    #[test]
+    fn a_clip_covered_whole_gives_way_entirely() {
+        let (mut editor, media_id, first) = fixture(); // T1, 0..10
+        let lanes: Vec<String> =
+            editor.project().active().tracks.iter().map(|track| track.id.clone()).collect();
+        let cover = spare_clip(&mut editor, &media_id, &lanes[1], 10.0);
+
+        editor
+            .apply(Command::MoveClips {
+                moves: vec![ClipMove {
+                    clip_id: cover.clone(),
+                    start: 0.0,
+                    track_id: lanes[0].clone(),
+                }],
+            })
+            .expect("moves");
+
+        assert!(
+            editor.project().active().clips.iter().all(|clip| clip.id != first),
+            "nothing of it was left to see or hear"
+        );
+        assert_eq!(editor.project().active().clips.len(), 1);
+    }
+
+    #[test]
+    fn a_selection_dragged_together_does_not_carve_itself() {
+        let (mut editor, media_id, first) = fixture(); // T1, 0..10
+        let lanes: Vec<String> =
+            editor.project().active().tracks.iter().map(|track| track.id.clone()).collect();
+        let second = spare_clip(&mut editor, &media_id, &lanes[1], 10.0);
+        editor
+            .apply(Command::MoveClips {
+                moves: vec![ClipMove {
+                    clip_id: second.clone(),
+                    start: 10.0,
+                    track_id: lanes[0].clone(),
+                }],
+            })
+            .expect("lands after the first");
+
+        // Both shift by five together. Mid-gesture the second sits where the
+        // first is going, and a naive carve would eat one of them.
+        editor
+            .apply(Command::MoveClips {
+                moves: vec![
+                    ClipMove { clip_id: first.clone(), start: 5.0, track_id: lanes[0].clone() },
+                    ClipMove { clip_id: second.clone(), start: 15.0, track_id: lanes[0].clone() },
+                ],
+            })
+            .expect("moves both");
+
+        assert_eq!(editor.project().active().clips.len(), 2, "both survive");
+        assert_eq!(span_of(&editor, &first), (5.0, 10.0));
+        assert_eq!(span_of(&editor, &second), (15.0, 10.0));
+    }
+
+    #[test]
+    fn a_remainder_too_short_to_grab_is_dropped_rather_than_left() {
+        let (mut editor, media_id, first) = fixture(); // T1, 0..10
+        let lanes: Vec<String> =
+            editor.project().active().tracks.iter().map(|track| track.id.clone()).collect();
+        let second = spare_clip(&mut editor, &media_id, &lanes[1], 10.0);
+
+        // Lands a thousandth of a second in - well under the sixtieth that is
+        // the shortest clip the model allows.
+        editor
+            .apply(Command::MoveClips {
+                moves: vec![ClipMove {
+                    clip_id: second,
+                    start: 0.001,
+                    track_id: lanes[0].clone(),
+                }],
+            })
+            .expect("moves");
+
+        assert!(
+            editor.project().active().clips.iter().all(|clip| clip.id != first),
+            "a sliver nobody could select must not be left behind"
+        );
+    }
+
     #[test]
     fn a_blend_mode_survives_the_document() {
         let (mut editor, _, clip_id) = fixture();
