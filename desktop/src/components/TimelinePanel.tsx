@@ -18,7 +18,7 @@ import {
 } from "../lib/editor";
 import { useLocale, type MsgKey } from "../lib/i18n";
 import { timecode } from "../lib/time";
-import { EFFECT_LANE_HEIGHT, EffectLane } from "./EffectLane";
+import { EffectLane, laneHeight, packRows } from "./EffectLane";
 import { Icon, IconButton } from "./Icon";
 import { Menu, type MenuOption } from "./Menu";
 import { Bar, Divider, PANEL_SHELL, Spacer } from "./Panel";
@@ -1052,7 +1052,7 @@ export function TimelinePanel({
         <div
           className="flex shrink-0 items-center border-r border-hairline px-2.5
                      text-[11px] text-tertiary"
-          style={{ width: HEADER_WIDTH, height: EFFECT_LANE_HEIGHT }}
+          style={{ width: HEADER_WIDTH, height: laneHeight(packRows(timeline.effects).rows) }}
         >
           {t("effectLane.title")}
         </div>

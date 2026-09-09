@@ -3,8 +3,47 @@ import { useRef, useState, type PointerEvent as ReactPointerEvent } from "react"
 import type { TimelineEffect } from "../lib/editor";
 import { useLocale } from "../lib/i18n";
 
-/** Lane height. Shorter than a track: an effect is a span, not a picture. */
-export const EFFECT_LANE_HEIGHT = 30;
+/** One row of blocks. Shorter than a track: an effect is a span, not a picture. */
+const ROW_HEIGHT = 26;
+
+/** Room above and below the rows, so blocks are not flush against the edges. */
+const LANE_PADDING = 4;
+
+/**
+ * Which row each effect draws on, and how many rows that needs.
+ *
+ * Two effects covering the same instant is a real thing to want - a blur
+ * under a grain, both fading - so overlap is allowed. Drawn on one row it
+ * reads as a mistake rather than a stack, which is what a calendar solves the
+ * same way: an effect takes the first row where nothing already sits under
+ * it, and the lane grows to fit.
+ */
+export function packRows(effects: readonly TimelineEffect[]): {
+  rowOf: Map<string, number>;
+  rows: number;
+} {
+  const rowOf = new Map<string, number>();
+  /** Where each row is free from, in seconds. */
+  const freeFrom: number[] = [];
+
+  // In time order, so the packing does not depend on the order they happen
+  // to be stored in - two documents with the same effects must draw alike.
+  for (const effect of [...effects].sort((a, b) => a.start - b.start || a.id.localeCompare(b.id))) {
+    let row = freeFrom.findIndex((from) => from <= effect.start);
+    if (row === -1) {
+      row = freeFrom.length;
+      freeFrom.push(0);
+    }
+    freeFrom[row] = effect.start + effect.duration;
+    rowOf.set(effect.id, row);
+  }
+  return { rowOf, rows: Math.max(1, freeFrom.length) };
+}
+
+/** How tall the lane has to be to hold `rows` of blocks. */
+export function laneHeight(rows: number): number {
+  return rows * ROW_HEIGHT + LANE_PADDING;
+}
 
 /** How near an edge counts as grabbing it rather than the block. */
 const EDGE_GRAB = 7;
@@ -63,6 +102,10 @@ export function EffectLane({
   const shown = (effect: TimelineEffect) =>
     live && live.id === effect.id ? live : effect;
 
+  // Packed from what is drawn, not from what is stored, so a block being
+  // dragged finds its own row as it moves rather than sitting over another.
+  const { rowOf, rows } = packRows(effects.map((effect) => shown(effect)));
+
   const gripAt = (effect: TimelineEffect, offsetX: number): Grip => {
     const width = effect.duration / secondsPerPixel;
     if (offsetX <= EDGE_GRAB) return "start";
@@ -114,7 +157,7 @@ export function EffectLane({
   return (
     <div
       className="relative min-w-0 flex-1 overflow-hidden bg-sunken/40"
-      style={{ height: EFFECT_LANE_HEIGHT }}
+      style={{ height: laneHeight(rows) }}
       onPointerDown={() => onSelect(null)}
     >
       {effects.map((stored) => {
@@ -141,13 +184,13 @@ export function EffectLane({
                 onRemove(effect.id);
               }
             }}
-            className={`absolute top-1 flex h-[22px] cursor-grab items-center overflow-hidden
+            className={`absolute flex h-[22px] cursor-grab items-center overflow-hidden
                         rounded border text-[10px] active:cursor-grabbing ${
                           selected
                             ? "border-accent bg-accent-soft text-primary"
                             : "border-hairline-strong bg-panel text-secondary"
                         } ${effect.enabled ? "" : "opacity-40"}`}
-            style={{ left, width }}
+            style={{ left, width, top: (rowOf.get(effect.id) ?? 0) * ROW_HEIGHT + LANE_PADDING / 2 }}
           >
             {/* The ramps, drawn as the wedges they are. Purely a picture -
                 the grips that change them are hit-tested in `gripAt`. */}

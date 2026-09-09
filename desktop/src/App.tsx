@@ -518,6 +518,33 @@ function Editor({
 
   const [selectedEffectId, setSelectedEffectId] = useState<string | null>(null);
 
+  /**
+   * Timeline effects covering the playhead, as the element preview's own
+   * approximation understands them.
+   *
+   * The engine's frames already carry these, ramp and all - but a single clip
+   * playing is drawn by the `<video>` element, which knows nothing about
+   * FFmpeg. Feeding them through the same CSS look the clip's own effects use
+   * is how that path has always approximated an effect, so a timeline effect
+   * is visible while playing instead of only when the playhead rests.
+   *
+   * At full strength: CSS has no general way to be half a blur, so the ramp
+   * is the truthful frame's to show. The approximation says *that* the effect
+   * is there, which is its job; the frame under the pause says how much.
+   */
+  const previewTimelineEffects = useMemo(
+    () =>
+      activeTimeline(project)
+        .effects.filter(
+          (effect) =>
+            effect.enabled &&
+            playhead >= effect.start &&
+            playhead <= effect.start + effect.duration,
+        )
+        .map((effect) => ({ id: effect.effectId, params: effect.params })),
+    [project, playhead],
+  );
+
   /** Lays an effect over the timeline at the playhead. */
   const addTimelineEffect = useCallback(
     (effectId: string) => {
@@ -1388,7 +1415,7 @@ function Editor({
                   : null
               }
               opacity={previewClip?.opacity ?? 1}
-              effects={previewClip?.videoEffects ?? null}
+              effects={[...(previewClip?.videoEffects ?? []), ...previewTimelineEffects]}
               ghost={previewGhost}
               engineStill={engineStill}
               onApproximationFailed={onApproximationFailed}
