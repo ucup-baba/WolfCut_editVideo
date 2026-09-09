@@ -39,6 +39,14 @@ pub struct EncodeOptions {
     pub crf: u8,
     /// Output pixel format. `yuv420p` is what players actually accept.
     pub pixel_format: String,
+    /// A filtergraph laid over the finished picture on the way in, or empty.
+    ///
+    /// Unlike a decoder's chain this runs on the composite, where `t` is
+    /// timeline time - which is the whole reason a timeline effect can cover
+    /// a span that crosses a cut. The graph is built by the engine, not
+    /// handed in by a caller, so it is allowed the `;` and `[..]` a clip's
+    /// chain is not.
+    pub video_filter: String,
 }
 
 impl Default for EncodeOptions {
@@ -48,6 +56,7 @@ impl Default for EncodeOptions {
             preset: "medium".to_owned(),
             crf: 18,
             pixel_format: "yuv420p".to_owned(),
+            video_filter: String::new(),
         }
     }
 }
@@ -88,6 +97,11 @@ impl FfmpegEncoder {
             // may not include. The pipe protocol is what we actually mean.
             .args(["-i", "pipe:0"])
             // Output.
+            .args(if options.video_filter.is_empty() {
+                Vec::new()
+            } else {
+                vec!["-vf".to_owned(), options.video_filter.clone()]
+            })
             .args(["-c:v", &options.codec])
             .args(["-preset", &options.preset])
             .args(["-crf", &options.crf.to_string()])

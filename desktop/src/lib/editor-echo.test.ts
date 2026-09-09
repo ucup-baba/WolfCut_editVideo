@@ -250,8 +250,15 @@ describe("withEcho", () => {
         name: "Timeline 1",
         tracks: [{ id: "T1", name: "Track 1", visible: true, muted: false }],
         clips,
+        effects: [],
       },
-      { id: "TL2", name: "Timeline 2", tracks: [], clips: [clip({ id: "other" })] },
+      {
+        id: "TL2",
+        name: "Timeline 2",
+        tracks: [],
+        clips: [clip({ id: "other" })],
+        effects: [],
+      },
     ],
     activeTimelineId: "TL1",
   });

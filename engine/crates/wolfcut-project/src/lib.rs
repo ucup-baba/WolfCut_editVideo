@@ -34,7 +34,9 @@ pub use model::Project;
 mod tests {
     use serde_json::json;
 
-    use crate::commands::{ClipMove, ClipPatch, Command, TrackFlag, TrimEdge};
+    use crate::commands::{
+        ClipMove, ClipPatch, Command, TimelineEffectPatch, TrackFlag, TrimEdge,
+    };
     use crate::doc::DocumentSettings;
     use crate::editor::Editor;
     use crate::model::{BlendMode, ClipKind, MediaKind, TextStyle};
@@ -451,6 +453,176 @@ mod tests {
         assert!(
             editor.project().active().clips.iter().all(|clip| clip.id != first),
             "a sliver nobody could select must not be left behind"
+        );
+    }
+
+    fn add_effect(editor: &mut Editor, start: f64, duration: f64) -> String {
+        editor
+            .apply(Command::AddTimelineEffect {
+                effect_id: "gaussian-blur".to_owned(),
+                start,
+                duration,
+            })
+            .expect("adds")
+            .created_id
+            .expect("id")
+    }
+
+    fn effect_of(editor: &Editor, id: &str) -> crate::model::TimelineEffect {
+        editor
+            .project()
+            .active()
+            .effects
+            .iter()
+            .find(|effect| effect.id == id)
+            .expect("effect exists")
+            .clone()
+    }
+
+    #[test]
+    fn a_timeline_effect_is_placed_moved_and_lifted() {
+        let (mut editor, _, _) = fixture();
+        let id = add_effect(&mut editor, 2.0, 3.0);
+
+        let effect = effect_of(&editor, &id);
+        assert_eq!((effect.start, effect.duration), (2.0, 3.0));
+        assert_eq!(effect.end(), 5.0);
+        assert!(effect.enabled);
+        assert_eq!((effect.ease_in, effect.ease_out), (0.0, 0.0), "no ease unless asked");
+
+        editor
+            .apply(Command::UpdateTimelineEffect {
+                effect_id: id.clone(),
+                patch: TimelineEffectPatch {
+                    start: Some(6.0),
+                    duration: Some(4.0),
+                    ..TimelineEffectPatch::default()
+                },
+            })
+            .expect("moves and trims in one step");
+        let effect = effect_of(&editor, &id);
+        assert_eq!((effect.start, effect.duration), (6.0, 4.0));
+
+        editor
+            .apply(Command::RemoveTimelineEffects { effect_ids: vec![id] })
+            .expect("removes");
+        assert!(editor.project().active().effects.is_empty());
+    }
+
+    #[test]
+    fn effects_may_overlap_each_other() {
+        // Unlike two clips on one lane, two effects over the same instant is
+        // a real thing to want: a blur under a grain, both fading.
+        let (mut editor, _, _) = fixture();
+        add_effect(&mut editor, 0.0, 5.0);
+        add_effect(&mut editor, 2.0, 5.0);
+        assert_eq!(editor.project().active().effects.len(), 2);
+    }
+
+    #[test]
+    fn the_two_eases_can_never_outrun_the_span() {
+        let (mut editor, _, _) = fixture();
+        let id = add_effect(&mut editor, 0.0, 4.0);
+
+        // Asked for six seconds of ramp inside four seconds of effect. Left
+        // alone the ramps would cross and the effect would never reach full.
+        editor
+            .apply(Command::UpdateTimelineEffect {
+                effect_id: id.clone(),
+                patch: TimelineEffectPatch {
+                    ease_in: Some(3.0),
+                    ease_out: Some(3.0),
+                    ..TimelineEffectPatch::default()
+                },
+            })
+            .expect("updates");
+
+        let effect = effect_of(&editor, &id);
+        assert_eq!(effect.ease_in + effect.ease_out, 4.0, "scaled to fit, not clipped");
+        assert_eq!(effect.ease_in, effect.ease_out, "and scaled in proportion");
+    }
+
+    #[test]
+    fn shortening_an_effect_pulls_its_eases_in_with_it() {
+        let (mut editor, _, _) = fixture();
+        let id = add_effect(&mut editor, 0.0, 10.0);
+        editor
+            .apply(Command::UpdateTimelineEffect {
+                effect_id: id.clone(),
+                patch: TimelineEffectPatch {
+                    ease_in: Some(4.0),
+                    ..TimelineEffectPatch::default()
+                },
+            })
+            .expect("eases in over four seconds");
+
+        editor
+            .apply(Command::UpdateTimelineEffect {
+                effect_id: id.clone(),
+                patch: TimelineEffectPatch {
+                    duration: Some(2.0),
+                    ..TimelineEffectPatch::default()
+                },
+            })
+            .expect("then is trimmed to two");
+
+        assert_eq!(effect_of(&editor, &id).ease_in, 2.0, "the ramp cannot outlast the effect");
+    }
+
+    #[test]
+    fn a_timeline_effect_survives_the_document() {
+        let (mut editor, _, _) = fixture();
+        let id = add_effect(&mut editor, 1.5, 2.5);
+        editor
+            .apply(Command::UpdateTimelineEffect {
+                effect_id: id.clone(),
+                patch: TimelineEffectPatch {
+                    ease_in: Some(0.5),
+                    ease_out: Some(0.25),
+                    ..TimelineEffectPatch::default()
+                },
+            })
+            .expect("eases");
+
+        let document = editor.to_document(&settings());
+        let restored = Editor::from_document(&document).expect("loads");
+        let effect = restored
+            .project()
+            .active()
+            .effects
+            .iter()
+            .find(|effect| effect.id == id)
+            .expect("survives");
+        assert_eq!((effect.start, effect.duration), (1.5, 2.5));
+        assert_eq!((effect.ease_in, effect.ease_out), (0.5, 0.25));
+        assert_eq!(effect.effect_id, "gaussian-blur");
+    }
+
+    #[test]
+    fn a_document_without_effects_still_loads() {
+        // Every project already on disk is one of these.
+        let document = json!({
+            "wolfcut": "0.1.0", "version": 1, "name": "Old",
+            "video": { "width": 1920, "height": 1080, "rateNum": 30, "rateDen": 1 },
+            "media": [], "fonts": [],
+            "tracks": [{ "id": "T1", "name": "Track 1", "visible": true, "muted": false }],
+            "clips": []
+        });
+        let editor = Editor::from_document(&document).expect("loads");
+        assert!(editor.project().active().effects.is_empty());
+    }
+
+    #[test]
+    fn a_zero_length_effect_on_disk_is_dropped() {
+        let (mut editor, _, _) = fixture();
+        add_effect(&mut editor, 0.0, 3.0);
+        let mut document = editor.to_document(&settings());
+        document["timelines"][0]["effects"][0]["duration"] = json!(0.0);
+
+        let restored = Editor::from_document(&document).expect("loads anyway");
+        assert!(
+            restored.project().active().effects.is_empty(),
+            "an effect covering no time would only clutter the lane"
         );
     }
 
@@ -1270,6 +1442,20 @@ mod tests {
             Command::SplitClips { clip_ids: vec!["c1".to_owned()], time: 3.0 },
             Command::MergeClips { clip_ids: vec!["c1".to_owned(), "c2".to_owned()] },
             Command::RemoveClips { clip_ids: vec!["c1".to_owned()] },
+            Command::AddTimelineEffect {
+                effect_id: "gaussian-blur".to_owned(),
+                start: 1.0,
+                duration: 2.0,
+            },
+            Command::UpdateTimelineEffect {
+                effect_id: "e1".to_owned(),
+                patch: TimelineEffectPatch {
+                    start: Some(2.0),
+                    ease_in: Some(0.5),
+                    ..TimelineEffectPatch::default()
+                },
+            },
+            Command::RemoveTimelineEffects { effect_ids: vec!["e1".to_owned()] },
             Command::UpdateClip {
                 clip_id: "c1".to_owned(),
                 patch: ClipPatch {

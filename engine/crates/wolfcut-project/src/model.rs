@@ -365,6 +365,58 @@ pub struct Clip {
     pub text: Option<TextStyle>,
 }
 
+/// One effect laid over the finished picture, covering a span of timeline
+/// rather than a clip.
+///
+/// A clip's own `video_effects` are bound to where the cuts are: they run
+/// for exactly as long as the clip does, and cannot reach across one. These
+/// are the other kind - placed on the timeline, so a look can run across a
+/// cut, or across part of a clip, without anyone having to cut the edit up
+/// to say so.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "types", derive(ts_rs::TS))]
+#[cfg_attr(feature = "types", ts(export))]
+#[serde(rename_all = "camelCase")]
+pub struct TimelineEffect {
+    /// Minted by the editor ("e1", "e2", ...).
+    pub id: String,
+    /// Which catalogue entry this is, e.g. "gaussian-blur". An id the
+    /// catalogue no longer knows is skipped at render time, the way an
+    /// unknown [`AppliedFilter`] is.
+    pub effect_id: String,
+    /// The user's knob settings, keyed by parameter name. Missing keys mean
+    /// the catalogue's defaults; ordered so serialisation is stable.
+    #[serde(default)]
+    pub params: BTreeMap<String, f64>,
+    /// Seconds from the start of the timeline.
+    pub start: f64,
+    /// Seconds of timeline the effect covers.
+    pub duration: f64,
+    /// Seconds the effect takes to come fully in at its head. Zero is a hard
+    /// cut.
+    ///
+    /// This is the reason the renderer blends a filtered branch against the
+    /// clean picture instead of filtering in place: almost every filter in
+    /// the catalogue takes a fixed parameter and cannot be ramped, but the
+    /// weight of a blend can be anything, including a function of time.
+    #[serde(default)]
+    pub ease_in: f64,
+    /// Seconds the effect takes to fall away at its tail. Zero is a hard cut.
+    #[serde(default)]
+    pub ease_out: f64,
+    /// False bypasses without losing settings. Absent means enabled.
+    #[cfg_attr(feature = "types", ts(as = "Option<bool>", optional))]
+    #[serde(default = "yes")]
+    pub enabled: bool,
+}
+
+impl TimelineEffect {
+    /// Where the effect stops, in timeline seconds.
+    pub fn end(&self) -> f64 {
+        self.start + self.duration
+    }
+}
+
 /// One timeline: a name and its lanes and clips. Unlike the UI's provisional
 /// model there is no "shelf" - that split existed only so the TypeScript
 /// operations could stay ignorant of timelines. Here every operation takes
@@ -384,6 +436,10 @@ pub struct Timeline {
     /// Every clip on this timeline, in insertion order, not time order -
     /// readers must sort by `start` where order matters.
     pub clips: Vec<Clip>,
+    /// Effects laid over the finished picture; see [`TimelineEffect`].
+    /// Applied in order, so a later one sees what the earlier ones left.
+    #[serde(default)]
+    pub effects: Vec<TimelineEffect>,
 }
 
 /// A font the user added from disk.
@@ -437,6 +493,7 @@ impl Project {
                     })
                     .collect(),
                 clips: Vec::new(),
+                effects: Vec::new(),
             }],
             active_timeline_id: "TL1".to_owned(),
         }

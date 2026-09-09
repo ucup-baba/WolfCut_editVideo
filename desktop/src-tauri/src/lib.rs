@@ -704,7 +704,7 @@ async fn preview_frame(
     editor: tauri::State<'_, editor_api::EditorState>,
     request: PreviewSpec,
 ) -> Result<tauri::ipc::Response, String> {
-    let (clips, settings) = editor_api::flattened_clips(&editor)?;
+    let (clips, _effects, settings) = editor_api::flattened_clips(&editor)?;
     let request = export::PreviewFrameRequest {
         time: request.time,
         width: request.width,
@@ -739,7 +739,7 @@ async fn preview_prefetch(
     request: PreviewSpec,
     frames: u32,
 ) -> Result<(), String> {
-    let (clips, settings) = editor_api::flattened_clips(&editor)?;
+    let (clips, _effects, settings) = editor_api::flattened_clips(&editor)?;
     let request = export::PreviewFrameRequest {
         time: request.time,
         width: request.width,
@@ -791,7 +791,7 @@ async fn export_project(
     editor: tauri::State<'_, editor_api::EditorState>,
     request: ExportSpec,
 ) -> Result<String, String> {
-    let (mut clips, settings) = editor_api::flattened_clips(&editor)?;
+    let (mut clips, effects, settings) = editor_api::flattened_clips(&editor)?;
     clips.extend(request.titles);
     let request = export::ExportRequest {
         output: request.output,
@@ -802,6 +802,7 @@ async fn export_project(
         crf: request.crf,
         preset: request.preset,
         clips,
+        effects,
     };
     let job = state.0.begin("export")?;
     tauri::async_runtime::spawn_blocking(move || export::run(&app, request, job.cancel_flag()))

@@ -6,13 +6,13 @@
 //! copy - the clamps and tolerances documented on each variant are the
 //! contract the UI's gesture echo mirrors and tests against.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
 use crate::model::{
     AppliedFilter, BlendMode, Clip, ClipKind, CustomFont, MediaItem, MediaKind, Project,
-    TextStyle, Timeline, Track, Transition,
+    TextStyle, Timeline, TimelineEffect, Track, Transition,
 };
 
 /// Fallback length for media whose container reports no duration.
@@ -122,6 +122,36 @@ pub struct ClipPatch {
     #[serde(default, with = "double_option", skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "types", ts(as = "Option<TextStyle>", optional = nullable))]
     pub text: Option<Option<TextStyle>>,
+}
+
+/// A partial update to one timeline effect. Every field optional, and one
+/// command covers moving, trimming, retuning and bypassing - a drag on the
+/// effect lane is a start and a duration, and there is no reason for those
+/// to be two commands and two undo steps.
+#[derive(Clone, Default, PartialEq, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "types", derive(ts_rs::TS))]
+#[cfg_attr(feature = "types", ts(export))]
+#[serde(rename_all = "camelCase")]
+pub struct TimelineEffectPatch {
+    /// New timeline position in seconds, floored at 0.
+    #[cfg_attr(feature = "types", ts(optional))]
+    pub start: Option<f64>,
+    /// New length in seconds, floored at the minimum clip duration - an
+    /// effect shorter than a frame cannot be seen or grabbed.
+    #[cfg_attr(feature = "types", ts(optional))]
+    pub duration: Option<f64>,
+    /// Wholesale replacement of the knob settings, like `ClipPatch::filters`.
+    #[cfg_attr(feature = "types", ts(optional))]
+    pub params: Option<BTreeMap<String, f64>>,
+    /// New ease-in length in seconds, floored at 0 and capped by the span.
+    #[cfg_attr(feature = "types", ts(optional))]
+    pub ease_in: Option<f64>,
+    /// New ease-out length, same terms as `ease_in`.
+    #[cfg_attr(feature = "types", ts(optional))]
+    pub ease_out: Option<f64>,
+    /// New bypass state, taken as sent.
+    #[cfg_attr(feature = "types", ts(optional))]
+    pub enabled: Option<bool>,
 }
 
 /// `Option<Option<T>>` over JSON: absent → None, null → Some(None).
@@ -267,6 +297,33 @@ pub enum Command {
         #[cfg_attr(feature = "types", ts(optional))]
         #[serde(default)]
         offset_y: Option<f64>,
+    },
+    /// Lays an effect over a span of the timeline, rather than on a clip.
+    ///
+    /// Unlike a clip's own `video_effects` this is not bound to where the
+    /// cuts are, so a look can run across one. The span is taken as given -
+    /// effects may overlap each other, and stacking two deliberately is a
+    /// real thing to want, unlike two clips on one lane.
+    AddTimelineEffect {
+        /// Which catalogue entry, e.g. "gaussian-blur".
+        effect_id: String,
+        /// Timeline position in seconds, floored at 0.
+        start: f64,
+        /// Seconds of timeline to cover, floored at the minimum duration.
+        duration: f64,
+    },
+    /// Moves, trims, retunes or bypasses one effect. An unknown id is a
+    /// no-op, like [`Command::UpdateClip`].
+    UpdateTimelineEffect {
+        /// Which effect to change.
+        effect_id: String,
+        /// What to change about it.
+        patch: TimelineEffectPatch,
+    },
+    /// Lifts effects off the timeline. Unknown ids are skipped.
+    RemoveTimelineEffects {
+        /// The effects to remove.
+        effect_ids: Vec<String>,
     },
     /// Repositions any number of clips in one edit - one undo step for a
     /// whole multi-selection drag. Unknown clips and tracks are tolerated
@@ -954,6 +1011,71 @@ pub fn apply(
             Ok(Outcome { created_id: Some(id), applied: true })
         }
 
+        Command::AddTimelineEffect { effect_id, start, duration } => {
+            let id = mint.next("e");
+            project.active_mut().effects.push(TimelineEffect {
+                id: id.clone(),
+                effect_id,
+                params: BTreeMap::new(),
+                start: start.max(0.0),
+                duration: duration.max(MIN_CLIP_DURATION),
+                // No ease until asked for. A look that fades itself in when
+                // nobody said so is a surprise, and the handles are there.
+                ease_in: 0.0,
+                ease_out: 0.0,
+                enabled: true,
+            });
+            Ok(Outcome { created_id: Some(id), applied: true })
+        }
+
+        Command::UpdateTimelineEffect { effect_id, patch } => {
+            let timeline = project.active_mut();
+            let Some(effect) = timeline.effects.iter_mut().find(|e| e.id == effect_id) else {
+                return Ok(Outcome::default());
+            };
+            let mut applied = false;
+            if let Some(start) = patch.start {
+                applied |= assign(&mut effect.start, start.max(0.0));
+            }
+            if let Some(duration) = patch.duration {
+                applied |= assign(&mut effect.duration, duration.max(MIN_CLIP_DURATION));
+            }
+            if let Some(params) = patch.params {
+                applied |= assign(&mut effect.params, params);
+            }
+            if let Some(ease) = patch.ease_in {
+                applied |= assign(&mut effect.ease_in, ease.max(0.0));
+            }
+            if let Some(ease) = patch.ease_out {
+                applied |= assign(&mut effect.ease_out, ease.max(0.0));
+            }
+            if let Some(enabled) = patch.enabled {
+                applied |= assign(&mut effect.enabled, enabled);
+            }
+            // Last, and after any of the three: shortening an effect has to
+            // pull its eases in with it, and the two eases together cannot
+            // outrun the span or the ramps would cross.
+            let span = effect.duration;
+            let (capped_in, capped_out) = (effect.ease_in.min(span), effect.ease_out.min(span));
+            applied |= assign(&mut effect.ease_in, capped_in);
+            applied |= assign(&mut effect.ease_out, capped_out);
+            if effect.ease_in + effect.ease_out > span {
+                let scale = span / (effect.ease_in + effect.ease_out);
+                let (ease_in, ease_out) = (effect.ease_in * scale, effect.ease_out * scale);
+                applied |= assign(&mut effect.ease_in, ease_in);
+                applied |= assign(&mut effect.ease_out, ease_out);
+            }
+            Ok(Outcome { created_id: None, applied })
+        }
+
+        Command::RemoveTimelineEffects { effect_ids } => {
+            let doomed: HashSet<String> = effect_ids.into_iter().collect();
+            let timeline = project.active_mut();
+            let before = timeline.effects.len();
+            timeline.effects.retain(|effect| !doomed.contains(&effect.id));
+            Ok(Outcome { created_id: None, applied: timeline.effects.len() != before })
+        }
+
         Command::MoveClips { moves } => {
             let timeline = project.active_mut();
             let track_ids: HashSet<String> =
@@ -1325,7 +1447,13 @@ pub fn apply(
                     muted: false,
                 })
                 .collect();
-            project.timelines.push(Timeline { id: id.clone(), name, tracks, clips: Vec::new() });
+            project.timelines.push(Timeline {
+                id: id.clone(),
+                name,
+                tracks,
+                clips: Vec::new(),
+                effects: Vec::new(),
+            });
             project.active_timeline_id = id.clone();
             Ok(Outcome { created_id: Some(id), applied: true })
         }

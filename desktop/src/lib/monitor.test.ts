@@ -72,6 +72,7 @@ function project(clips: Clip[]): EditorProject {
           { id: "T2", name: "Track 2", visible: true, muted: false },
         ],
         clips,
+        effects: [],
       },
     ],
     activeTimelineId: "TL1",

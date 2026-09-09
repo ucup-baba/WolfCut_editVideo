@@ -20,6 +20,7 @@
 //! filtergraph and mixed in a single pass.
 
 pub mod chains;
+pub mod effects;
 pub mod flatten;
 
 use std::collections::HashMap;
@@ -196,6 +197,11 @@ pub struct ExportRequest {
     pub preset: String,
     /// The flattened clip list to render.
     pub clips: Vec<ExportClip>,
+    /// Effects laid over the finished picture, each covering a span of the
+    /// timeline rather than a clip. Defaulted, so a request from a UI that
+    /// predates them still exports.
+    #[serde(default)]
+    pub effects: Vec<wolfcut_project::model::TimelineEffect>,
 }
 
 /// What the export loop calls to report and to ask "should I stop?".
@@ -547,6 +553,9 @@ fn render_picture(
         &EncodeOptions {
             crf: request.crf,
             preset: request.preset.clone(),
+            // Laid over the composite on the way into the encoder, so `t` in
+            // the graph is timeline time and an effect's span can cross a cut.
+            video_filter: effects::effect_graph(&request.effects).unwrap_or_default(),
             ..EncodeOptions::default()
         },
     )
@@ -859,6 +868,10 @@ fn preview_timeline(request: &PreviewFrameRequest, rate: FrameRate) -> BuiltTime
         crf: 18,
         preset: String::new(),
         clips: Vec::new(),
+        // build_timeline never reads these; the preview lays its own effects
+        // on separately, because they belong to the picture and not to the
+        // clip list this shim exists to convert.
+        effects: Vec::new(),
     };
     build_timeline(&shim, rate, &visible)
 }

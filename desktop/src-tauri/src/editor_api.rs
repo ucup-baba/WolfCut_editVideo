@@ -89,10 +89,22 @@ fn view(session: &Session, created_id: Option<String>) -> EditorView {
 /// titles).
 pub fn flattened_clips(
     state: &EditorState,
-) -> Result<(Vec<wolfcut_export::ExportClip>, DocumentSettings), String> {
+) -> Result<
+    (
+        Vec<wolfcut_export::ExportClip>,
+        Vec<wolfcut_project::model::TimelineEffect>,
+        DocumentSettings,
+    ),
+    String,
+> {
     with_session(state, |session| {
+        let project = session.editor.project();
         Ok((
-            wolfcut_export::flatten::flatten_timeline(session.editor.project(), None),
+            wolfcut_export::flatten::flatten_timeline(project, None),
+            // Not flattened: an effect covers a span of timeline and refers
+            // to no clip, so there is nothing about it for the flattener to
+            // resolve. It travels as the document wrote it.
+            project.active().effects.clone(),
             session.settings.clone(),
         ))
     })

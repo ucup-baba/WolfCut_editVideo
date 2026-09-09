@@ -3,6 +3,7 @@ import type { ClipMove } from "./ClipMove";
 import type { ClipPatch } from "./ClipPatch";
 import type { NewMedia } from "./NewMedia";
 import type { TextStyle } from "./TextStyle";
+import type { TimelineEffectPatch } from "./TimelineEffectPatch";
 import type { TrackFlag } from "./TrackFlag";
 import type { TrimEdge } from "./TrimEdge";
 
@@ -84,7 +85,31 @@ duration?: number,
  * Vertical placement as a frame-height fraction, clamped like
  * SetClipTransform. Lower thirds are made of this.
  */
-offsetY?: number, } | { "op": "moveClips", 
+offsetY?: number, } | { "op": "addTimelineEffect", 
+/**
+ * Which catalogue entry, e.g. "gaussian-blur".
+ */
+effectId: string, 
+/**
+ * Timeline position in seconds, floored at 0.
+ */
+start: number, 
+/**
+ * Seconds of timeline to cover, floored at the minimum duration.
+ */
+duration: number, } | { "op": "updateTimelineEffect", 
+/**
+ * Which effect to change.
+ */
+effectId: string, 
+/**
+ * What to change about it.
+ */
+patch: TimelineEffectPatch, } | { "op": "removeTimelineEffects", 
+/**
+ * The effects to remove.
+ */
+effectIds: Array<string>, } | { "op": "moveClips", 
 /**
  * Where each clip is going.
  */

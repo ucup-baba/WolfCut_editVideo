@@ -44,6 +44,7 @@ const EMPTY_PROJECT: EditorProject = {
         muted: false,
       })),
       clips: [],
+      effects: [],
     },
   ],
   activeTimelineId: "TL1",

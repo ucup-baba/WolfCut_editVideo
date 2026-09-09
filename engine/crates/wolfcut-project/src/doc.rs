@@ -15,7 +15,7 @@ use serde_json::{Map, Value, json};
 
 use crate::model::{
     AppliedFilter, BlendMode, Clip, ClipKind, CustomFont, MediaItem, MediaKind, Project,
-    TextAlign, TextStyle, Timeline, Track, Transition,
+    TextAlign, TextStyle, Timeline, TimelineEffect, Track, Transition,
 };
 
 /// Bumped only when a change cannot be absorbed by defaulting.
@@ -114,6 +114,44 @@ fn read_filters(raw: Option<&Value>) -> Vec<AppliedFilter> {
                 })
                 .unwrap_or_default();
             Some(AppliedFilter { id, params, enabled: flag(entry.get("enabled"), true) })
+        })
+        .collect()
+}
+
+/// Timeline effects, skipping anything without an id or a real span - a
+/// zero-length effect covers nothing and would only clutter the lane.
+fn read_effects(raw: Option<&Value>) -> Vec<TimelineEffect> {
+    let Some(entries) = raw.and_then(Value::as_array) else { return Vec::new() };
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let id = entry.get("id")?.as_str()?.to_owned();
+            let effect_id = entry.get("effectId")?.as_str()?.to_owned();
+            let duration = number(entry.get("duration"), 0.0);
+            if duration <= 0.0 {
+                return None;
+            }
+            let params = entry
+                .get("params")
+                .and_then(Value::as_object)
+                .map(|map| {
+                    map.iter()
+                        .filter_map(|(key, value)| Some((key.clone(), value.as_f64()?)))
+                        .collect()
+                })
+                .unwrap_or_default();
+            Some(TimelineEffect {
+                id,
+                effect_id,
+                params,
+                start: number(entry.get("start"), 0.0).max(0.0),
+                duration,
+                // Clamped to the span: an ease longer than the effect would
+                // never finish rising before it had to start falling.
+                ease_in: number(entry.get("easeIn"), 0.0).clamp(0.0, duration),
+                ease_out: number(entry.get("easeOut"), 0.0).clamp(0.0, duration),
+                enabled: flag(entry.get("enabled"), true),
+            })
         })
         .collect()
 }
@@ -246,6 +284,7 @@ pub fn from_document(document: &Value) -> Option<Project> {
                 name: text(entry.get("name"), "Timeline"),
                 tracks,
                 clips,
+                effects: read_effects(entry.get("effects")),
             });
         }
     }
@@ -260,6 +299,7 @@ pub fn from_document(document: &Value) -> Option<Project> {
             name: "Timeline 1".to_owned(),
             tracks,
             clips,
+            effects: read_effects(document.get("effects")),
         });
     }
 

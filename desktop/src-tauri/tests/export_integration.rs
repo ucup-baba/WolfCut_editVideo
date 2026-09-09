@@ -97,6 +97,7 @@ fn request(output: &Path, clips: Vec<ExportClip>) -> ExportRequest {
         crf: 30,
         preset: "ultrafast".to_owned(),
         clips,
+        effects: Vec::new(),
     }
 }
 
