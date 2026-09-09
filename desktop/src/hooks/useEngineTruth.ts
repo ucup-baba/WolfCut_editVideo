@@ -20,7 +20,7 @@
  */
 import { useEffect, useRef, useState } from "react";
 
-import { clipsAt, type EditorProject } from "../lib/editor";
+import { activeTimeline, clipsAt, type EditorProject } from "../lib/editor";
 import { previewFrame, previewPrefetch } from "../lib/engine";
 
 export interface EngineStill {
@@ -118,6 +118,20 @@ export function useEngineTruth({
         (clip) => clip.kind === "video" || clip.kind === "image",
       ).length;
 
+    /**
+     * Whether a timeline effect covers `time`.
+     *
+     * The element preview approximates one of these in CSS, which has no
+     * general way to be half a blur - so it draws the effect at full strength
+     * however far into its ramp the playhead is. That is a second, different
+     * answer for one instant, and the engine already has the right one.
+     */
+    const effectCovers = (time: number) =>
+      activeTimeline(latest.current.project).effects.some(
+        (effect) =>
+          effect.enabled && time >= effect.start && time <= effect.start + effect.duration,
+      );
+
     const run = async () => {
       // The lead starts at one frame and follows the round-trip, clamped to
       // [1, 3] frames - a pathological decode must not push requests seconds
@@ -128,8 +142,13 @@ export function useEngineTruth({
         const now = latest.current.playhead;
         // Two layers normally: one layer is the element preview's job, and it
         // does it more smoothly than a round trip per frame ever will. Where
-        // that element cannot play at all, one layer becomes the engine's.
-        if (visualLayers(now) < (approximationBroken ? 1 : 2)) {
+        // that element cannot play at all - or cannot draw what is being
+        // asked of it, which is what a ramped effect is - one layer becomes
+        // the engine's. Choppier, and the right trade: an effect that looks
+        // one way playing and another way stopped is worse than a slow one
+        // that looks the same both times.
+        const floor = approximationBroken || effectCovers(now) ? 1 : 2;
+        if (visualLayers(now) < floor) {
           setEngineStill(null);
           presented = -1;
           await wait(120);
