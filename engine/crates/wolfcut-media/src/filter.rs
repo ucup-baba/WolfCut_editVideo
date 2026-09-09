@@ -1,164 +1,92 @@
-//! Putting finished frames through a filter chain, one process for many.
+//! Putting one finished frame through a filter chain.
 //!
 //! The exporter lays timeline effects on at the encoder, where FFmpeg sees the
 //! whole stream and `t` means what it should. The monitor has no stream: it
-//! composites one instant and asks what that looks like.
+//! composites one instant and asks what that looks like, so the frame goes out
+//! to FFmpeg and comes straight back, filtered.
 //!
-//! The obvious way to answer - hand FFmpeg the frame, take it back filtered -
-//! costs a process each time, and a process is most of the cost. Measured on
-//! a 960x540 frame through a blur: 74 ms the obvious way, 19 ms when the
-//! process is already running. Starting it is three quarters of the work.
+//! # Why this starts a process every time
 //!
-//! So the process stays. What made that hard is that a ramped effect wants a
-//! different weight every frame, and a graph is fixed when the process
-//! starts - so the weight comes out of the graph entirely. FFmpeg runs the
-//! plain effect, the same chain a clip would use, and the ramp is applied
-//! afterwards by mixing the filtered frame back over the clean one in Rust,
-//! where a weight is just a number. Same arithmetic as the export's `blend`,
-//! and nothing has to be respawned to change it.
+//! Because it has to, and finding that out cost a freeze. A process is most
+//! of the cost - 74 ms against 19 ms on a 960x540 frame through a blur - so
+//! keeping one running is the obvious repair, and it does not work: FFmpeg
+//! holds a frame back. Feed it k frames on a pipe that stays open and k-1
+//! come out, every time, at every frame size, and no combination of
+//! `-flush_packets`, `-fflags nobuffer`, `-avioflags direct`, `-probesize` or
+//! `-muxdelay` changes it. A one-shot process does not notice because closing
+//! stdin flushes the last frame; a long-lived one blocks forever on the first.
+//!
+//! The latency measures as exactly one frame, which is enough to work around
+//! by pushing a pad frame after each real one. That is not a promise FFmpeg
+//! makes, though - a different filter or version may hold two - and the way
+//! it fails is a monitor that stops updating with nothing in any log. A
+//! preview that costs 74 ms is worth more than one that is fast until it
+//! silently is not.
+//!
+//! The weight still stays out of the graph, which is what [`mix`] is for: the
+//! chain here is the plain effect a clip would use, and the ramp is applied
+//! afterwards in Rust. That keeps this file honest about doing one thing.
 
-use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::process::{Child, ChildStdout, Stdio};
-use std::sync::mpsc::{SyncSender, sync_channel};
+use std::process::Stdio;
 
 use crate::error::{Error, Result};
 use crate::process::base_command;
 
-/// One running FFmpeg with a fixed chain, fed frames and read back.
-pub struct FrameFilter {
-    child: Child,
-    stdout: ChildStdout,
-    /// Frames go to a writer thread, because filling the child's stdin and
-    /// draining its stdout from one thread deadlocks the moment either pipe
-    /// fills - and a frame is far bigger than a pipe.
-    to_child: SyncSender<Vec<u8>>,
-    frame_bytes: usize,
-}
-
-impl FrameFilter {
-    /// Starts FFmpeg for `chain` at one frame size.
-    ///
-    /// The chain must keep the frame's dimensions: every read expects exactly
-    /// as many bytes as the write that prompted it. Everything the catalogue
-    /// builds keeps them.
-    pub fn open(width: u32, height: u32, chain: &str) -> Result<Self> {
-        crate::audio::validate_chain(chain)?;
-        let mut child = base_command(crate::binaries::ffmpeg())
-            .args(["-f", "rawvideo", "-pix_fmt", "rgba"])
-            .args(["-s", &format!("{width}x{height}")])
-            .args(["-i", "pipe:0"])
-            .args(["-vf", chain])
-            .args(["-f", "rawvideo", "-pix_fmt", "rgba"])
-            // Without this FFmpeg may hold a frame back waiting for company,
-            // and the reader would block on a frame that is already made.
-            .args(["-flush_packets", "1"])
-            .arg("pipe:1")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|source| Error::Spawn { program: "ffmpeg", source })?;
-
-        let mut stdin = child.stdin.take().expect("piped");
-        // One frame in flight: a queue here would only let the caller run
-        // ahead of a filter it is about to wait for anyway.
-        let (to_child, from_caller) = sync_channel::<Vec<u8>>(1);
-        std::thread::spawn(move || {
-            for frame in from_caller {
-                if stdin.write_all(&frame).is_err() {
-                    break;
-                }
-            }
-        });
-
-        Ok(Self {
-            stdout: child.stdout.take().expect("piped"),
-            child,
-            to_child,
-            frame_bytes: width as usize * height as usize * 4,
-        })
-    }
-
-    /// Filters one frame. The result is the same size as the input.
-    pub fn apply(&mut self, pixels: &[u8]) -> Result<Vec<u8>> {
-        if pixels.len() != self.frame_bytes {
-            return Err(Error::InvalidFilterChain {
-                chain: String::new(),
-                detail: format!("frame is {} bytes, expected {}", pixels.len(), self.frame_bytes),
-            });
-        }
-        self.to_child.send(pixels.to_vec()).map_err(|_| Error::InvalidFilterChain {
-            chain: String::new(),
-            detail: "the filter process has gone".to_owned(),
-        })?;
-
-        let mut out = vec![0u8; self.frame_bytes];
-        self.stdout.read_exact(&mut out).map_err(|source| Error::Spawn {
-            program: "ffmpeg",
-            source,
-        })?;
-        Ok(out)
-    }
-}
-
-impl Drop for FrameFilter {
-    fn drop(&mut self) {
-        // Closing stdin ends the writer thread and lets FFmpeg finish; the
-        // kill is for a child that ignores that.
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-/// Running filters, kept by what they do and how big they do it.
+/// Runs `chain` over one RGBA frame and returns the result, same size.
 ///
-/// A monitor scrubbing back and forth over the same effect asks for the same
-/// chain again and again; keeping the process is the whole point.
-#[derive(Default)]
-pub struct FilterPool {
-    running: HashMap<(String, u32, u32), FrameFilter>,
-}
-
-impl FilterPool {
-    /// An empty pool.
-    pub fn new() -> Self {
-        Self::default()
+/// The chain must keep the frame's dimensions - the caller reads back exactly
+/// as many bytes as it wrote. Everything the catalogue builds keeps them.
+pub fn filter_frame(pixels: &[u8], width: u32, height: u32, chain: &str) -> Result<Vec<u8>> {
+    crate::audio::validate_chain(chain)?;
+    let expected = width as usize * height as usize * 4;
+    if pixels.len() != expected {
+        return Err(Error::InvalidFilterChain {
+            chain: chain.to_owned(),
+            detail: format!("frame is {} bytes, expected {expected}", pixels.len()),
+        });
     }
 
-    /// Filters one frame through `chain`, starting a process for it the first
-    /// time and reusing it after.
-    ///
-    /// A filter that has died is dropped and started again rather than
-    /// poisoning every later frame - the monitor should recover from one bad
-    /// frame, not stop showing pictures.
-    pub fn apply(
-        &mut self,
-        chain: &str,
-        width: u32,
-        height: u32,
-        pixels: &[u8],
-    ) -> Result<Vec<u8>> {
-        let key = (chain.to_owned(), width, height);
-        if !self.running.contains_key(&key) {
-            self.running.insert(key.clone(), FrameFilter::open(width, height, chain)?);
-        }
-        match self.running.get_mut(&key).expect("just inserted").apply(pixels) {
-            Ok(filtered) => Ok(filtered),
-            Err(error) => {
-                self.running.remove(&key);
-                Err(error)
-            }
-        }
-    }
+    let mut child = base_command(crate::binaries::ffmpeg())
+        .args(["-f", "rawvideo", "-pix_fmt", "rgba"])
+        .args(["-s", &format!("{width}x{height}")])
+        .args(["-i", "pipe:0"])
+        .args(["-vf", chain])
+        .args(["-frames:v", "1"])
+        .args(["-f", "rawvideo", "-pix_fmt", "rgba"])
+        .arg("pipe:1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|source| Error::Spawn { program: "ffmpeg", source })?;
 
-    /// Drops every filter whose chain is not in `keep`.
-    ///
-    /// Called with what the edit still uses, so retuning an effect does not
-    /// leave the old chain's process running for the rest of the session.
-    pub fn retain(&mut self, keep: &[String]) {
-        self.running.retain(|(chain, _, _), _| keep.iter().any(|wanted| wanted == chain));
+    // Written on its own thread, and dropped there: closing stdin is what
+    // flushes the frame out of FFmpeg, and a single thread doing both ends
+    // would deadlock on a full pipe long before it got to the close.
+    let mut stdin = child.stdin.take().expect("piped");
+    let owned = pixels.to_vec();
+    let writer = std::thread::spawn(move || stdin.write_all(&owned));
+
+    let mut out = Vec::with_capacity(expected);
+    let read = child
+        .stdout
+        .take()
+        .expect("piped")
+        .read_to_end(&mut out)
+        .map_err(|source| Error::Spawn { program: "ffmpeg", source });
+
+    let _ = writer.join();
+    let status = child.wait().map_err(|source| Error::Spawn { program: "ffmpeg", source })?;
+    read?;
+
+    if !status.success() || out.len() != expected {
+        return Err(Error::InvalidFilterChain {
+            chain: chain.to_owned(),
+            detail: format!("ffmpeg returned {} bytes, expected {expected}", out.len()),
+        });
     }
+    Ok(out)
 }
 
 /// Mixes `filtered` back over `clean` at `weight`, in place on a copy.

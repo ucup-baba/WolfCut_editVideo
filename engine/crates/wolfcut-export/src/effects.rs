@@ -119,24 +119,6 @@ pub fn effect_layers_at(effects: &[TimelineEffect], time: f64) -> Vec<(String, f
     layers
 }
 
-/// Every chain the effects could ask for, whatever the playhead is doing.
-///
-/// The filter pool keeps a process per chain; this is what tells it which
-/// ones are still worth keeping after an edit.
-pub fn effect_chains(effects: &[TimelineEffect]) -> Vec<String> {
-    effects
-        .iter()
-        .map(|effect| {
-            video_effect_chain(&[AppliedFilter {
-                id: effect.effect_id.clone(),
-                params: effect.params.clone(),
-                enabled: true,
-            }])
-        })
-        .filter(|chain| !chain.is_empty())
-        .collect()
-}
-
 /// The ramp weight at one instant, in `0.0..=1.0`.
 ///
 /// The same shape the timeline graph's expression describes, evaluated in
@@ -303,12 +285,6 @@ mod tests {
     fn a_zero_weight_instant_is_no_filtering_at_all() {
         let laid = [TimelineEffect { ease_in: 1.0, ..effect(0.0, 4.0) }];
         assert!(effect_layers_at(&laid, 0.0).is_empty(), "the ramp has not started");
-    }
-
-    #[test]
-    fn every_chain_is_offered_to_the_pool_whatever_the_playhead_does() {
-        let laid = [effect(0.0, 2.0), effect(90.0, 2.0)];
-        assert_eq!(effect_chains(&laid).len(), 2, "both, even the one far away");
     }
 
     #[test]

@@ -786,7 +786,6 @@ pub struct PreviewFrameRequest {
 /// `width * height * 4` bytes.
 pub fn preview_frame(
     pool: &mut wolfcut_media::ReaderPool,
-    filters: &mut wolfcut_media::FilterPool,
     request: &PreviewFrameRequest,
 ) -> Result<Vec<u8>, String> {
     let rate = FrameRate::new(Rational::new(request.rate_num, request.rate_den));
@@ -862,13 +861,13 @@ pub fn preview_frame(
         // A failure loses the effect, not the frame: the monitor showing the
         // picture un-effected beats it showing nothing, and the export would
         // still be right.
-        let Ok(filtered) = filters.apply(&chain, request.width, request.height, &pixels) else {
+        let Ok(filtered) =
+            wolfcut_media::filter_frame(&pixels, request.width, request.height, &chain)
+        else {
             continue;
         };
         pixels = wolfcut_media::mix(&pixels, &filtered, weight);
     }
-    // The processes worth keeping are the ones the edit still refers to.
-    filters.retain(&effects::effect_chains(&request.effects));
     Ok(pixels)
 }
 
@@ -1024,7 +1023,7 @@ mod tests {
         };
 
         let mut pool = wolfcut_media::ReaderPool::new(16 * 1024 * 1024, 2);
-        let bytes = preview_frame(&mut pool, &mut wolfcut_media::FilterPool::new(), &request).expect("previews");
+        let bytes = preview_frame(&mut pool, &request).expect("previews");
         assert_eq!(bytes.len(), 64 * 64 * 4);
         let centre = (32 * 64 + 32) * 4;
         assert!(
@@ -1047,7 +1046,7 @@ mod tests {
             clips: vec![outliving],
             effects: Vec::new(),
         };
-        let bytes = preview_frame(&mut pool, &mut wolfcut_media::FilterPool::new(), &late).expect("previews past the media's end");
+        let bytes = preview_frame(&mut pool, &late).expect("previews past the media's end");
         assert!(
             bytes[centre] > 120 && bytes[centre + 1] < 90,
             "past the end should freeze on the last frame, got {:?}",
@@ -1071,7 +1070,7 @@ mod tests {
             clips: vec![effected],
             effects: Vec::new(),
         };
-        let bytes = preview_frame(&mut pool, &mut wolfcut_media::FilterPool::new(), &filtered).expect("previews with a chain");
+        let bytes = preview_frame(&mut pool, &filtered).expect("previews with a chain");
         assert!(
             bytes[centre] < 90 && bytes[centre + 1] > 120,
             "the chain must be baked into the paused frame, got {:?}",
