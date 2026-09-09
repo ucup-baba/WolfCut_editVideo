@@ -26,7 +26,7 @@ mod process;
 pub use binaries::{ffmpeg, ffprobe, set_binaries};
 pub use decode::{DecodeOptions, FfmpegDecoder, FrameSource, SeekableSource};
 pub use encode::{EncodeOptions, FfmpegEncoder, FrameSink};
-pub use filter::filter_frame;
+pub use filter::{FilterPool, FrameFilter, mix};
 pub use error::{Error, Result};
 pub use peaks::Peaks;
 pub use pool::{FrameCache, ReaderPool};

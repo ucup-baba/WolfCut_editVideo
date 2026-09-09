@@ -87,20 +87,17 @@ pub fn effect_graph(effects: &[TimelineEffect]) -> Option<String> {
     Some(graph)
 }
 
-/// The graph for one instant, with every weight already worked out.
+/// The effect chains covering `time`, each with the weight to mix it at.
 ///
-/// The timeline graph is written in `T`, and a single frame handed to FFmpeg
-/// on a pipe arrives at `t = 0` however far into the edit it came from - so
-/// the ramps would all read as "not started yet". Rather than patch that, the
-/// weight is evaluated here and baked in as a number, which is both correct
-/// and cheaper: no expression is evaluated per pixel.
+/// The timeline graph carries its ramps as expressions in `T`, which needs
+/// FFmpeg to see a stream. The monitor has one frame, so the weight is worked
+/// out here instead and handed back as a number - which is also what lets the
+/// filter process stay running between frames, since its chain never changes.
 ///
-/// `None` when nothing covers `time`, which is the common case and means the
-/// frame needs no second pass at all.
-pub fn effect_graph_at(effects: &[TimelineEffect], time: f64) -> Option<String> {
-    let mut stages: Vec<String> = Vec::new();
-    let mut carried = String::new();
-
+/// Empty when nothing covers `time`, which is the common case and means the
+/// frame needs no filtering at all.
+pub fn effect_layers_at(effects: &[TimelineEffect], time: f64) -> Vec<(String, f32)> {
+    let mut layers = Vec::new();
     for effect in effects {
         if !effect.enabled || time < effect.start || time > effect.end() {
             continue;
@@ -117,28 +114,27 @@ pub fn effect_graph_at(effects: &[TimelineEffect], time: f64) -> Option<String> 
         if chain.is_empty() || wolfcut_media::audio::validate_chain(&chain).is_err() {
             continue;
         }
-
-        let index = stages.len();
-        let (clean, source, filtered) =
-            (format!("c{index}"), format!("s{index}"), format!("f{index}"));
-        let out = format!("o{index}");
-        stages.push(format!(
-            "{carried}split[{clean}][{source}];\
-             [{source}]{chain}[{filtered}];\
-             [{clean}][{filtered}]blend=all_expr='A*{clean_share:.6}+B*{weight:.6}'[{out}]",
-            carried = if carried.is_empty() { String::new() } else { format!("[{carried}]") },
-            clean_share = 1.0 - weight,
-        ));
-        carried = out;
+        layers.push((chain, weight as f32));
     }
+    layers
+}
 
-    if stages.is_empty() {
-        return None;
-    }
-    let mut graph = stages.join(";");
-    let tail = format!("[{carried}]");
-    graph.truncate(graph.len() - tail.len());
-    Some(graph)
+/// Every chain the effects could ask for, whatever the playhead is doing.
+///
+/// The filter pool keeps a process per chain; this is what tells it which
+/// ones are still worth keeping after an edit.
+pub fn effect_chains(effects: &[TimelineEffect]) -> Vec<String> {
+    effects
+        .iter()
+        .map(|effect| {
+            video_effect_chain(&[AppliedFilter {
+                id: effect.effect_id.clone(),
+                params: effect.params.clone(),
+                enabled: true,
+            }])
+        })
+        .filter(|chain| !chain.is_empty())
+        .collect()
 }
 
 /// The ramp weight at one instant, in `0.0..=1.0`.
@@ -276,21 +272,20 @@ mod tests {
     }
 
     #[test]
-    fn an_instant_outside_every_effect_needs_no_pass() {
+    fn an_instant_outside_every_effect_needs_no_filtering() {
         let laid = [effect(2.0, 2.0)];
-        assert_eq!(effect_graph_at(&laid, 1.0), None, "before it");
-        assert_eq!(effect_graph_at(&laid, 5.0), None, "after it");
-        assert!(effect_graph_at(&laid, 3.0).is_some(), "inside it");
+        assert!(effect_layers_at(&laid, 1.0).is_empty(), "before it");
+        assert!(effect_layers_at(&laid, 5.0).is_empty(), "after it");
+        assert_eq!(effect_layers_at(&laid, 3.0).len(), 1, "inside it");
     }
 
     #[test]
-    fn an_instant_bakes_the_weight_in_rather_than_leaving_an_expression() {
+    fn an_instant_hands_back_a_weight_rather_than_an_expression() {
         let laid = [TimelineEffect { ease_in: 2.0, ..effect(0.0, 4.0) }];
-        let graph = effect_graph_at(&laid, 1.0).expect("a graph");
-        // One second into a two-second ramp is half way up.
-        assert!(graph.contains("all_expr='A*0.500000+B*0.500000'"), "{graph}");
-        assert!(!graph.contains('T'), "no expression should survive: {graph}");
-        assert!(!graph.contains("enable="), "the instant is the gate: {graph}");
+        let layers = effect_layers_at(&laid, 1.0);
+        // One second into a two-second ramp is half way up. The chain is the
+        // plain effect, so the process running it never has to change.
+        assert_eq!(layers, vec![("gblur=sigma=10.0".to_owned(), 0.5)]);
     }
 
     #[test]
@@ -305,9 +300,15 @@ mod tests {
     }
 
     #[test]
-    fn a_zero_weight_instant_is_no_pass_at_all() {
+    fn a_zero_weight_instant_is_no_filtering_at_all() {
         let laid = [TimelineEffect { ease_in: 1.0, ..effect(0.0, 4.0) }];
-        assert_eq!(effect_graph_at(&laid, 0.0), None, "the ramp has not started");
+        assert!(effect_layers_at(&laid, 0.0).is_empty(), "the ramp has not started");
+    }
+
+    #[test]
+    fn every_chain_is_offered_to_the_pool_whatever_the_playhead_does() {
+        let laid = [effect(0.0, 2.0), effect(90.0, 2.0)];
+        assert_eq!(effect_chains(&laid).len(), 2, "both, even the one far away");
     }
 
     #[test]

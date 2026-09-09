@@ -786,6 +786,7 @@ pub struct PreviewFrameRequest {
 /// `width * height * 4` bytes.
 pub fn preview_frame(
     pool: &mut wolfcut_media::ReaderPool,
+    filters: &mut wolfcut_media::FilterPool,
     request: &PreviewFrameRequest,
 ) -> Result<Vec<u8>, String> {
     let rate = FrameRate::new(Rational::new(request.rate_num, request.rate_den));
@@ -852,19 +853,23 @@ pub fn preview_frame(
 
     // Then the timeline's own effects, at this instant. The exporter lays
     // these on at the encoder, where FFmpeg sees the stream and `t` means
-    // something; one frame on a pipe always arrives at zero, so the weight is
-    // worked out here and baked in. Nothing covering this instant means no
-    // second pass, which is the common case.
-    let Some(graph) = effects::effect_graph_at(&request.effects, request.time) else {
-        return Ok(pixels);
-    };
-    // A failure here loses the effect, not the frame: the monitor showing the
-    // picture un-effected beats it showing nothing while an export would
-    // still be right.
-    Ok(
-        wolfcut_media::filter_frame(&pixels, request.width, request.height, &graph)
-            .unwrap_or(pixels),
-    )
+    // something; one frame on a pipe always arrives at zero, so the ramp is
+    // worked out here and applied as a weight instead. That also keeps each
+    // filter's chain fixed, which is what lets its process stay running
+    // between frames rather than being started sixty times a second.
+    let mut pixels = pixels;
+    for (chain, weight) in effects::effect_layers_at(&request.effects, request.time) {
+        // A failure loses the effect, not the frame: the monitor showing the
+        // picture un-effected beats it showing nothing, and the export would
+        // still be right.
+        let Ok(filtered) = filters.apply(&chain, request.width, request.height, &pixels) else {
+            continue;
+        };
+        pixels = wolfcut_media::mix(&pixels, &filtered, weight);
+    }
+    // The processes worth keeping are the ones the edit still refers to.
+    filters.retain(&effects::effect_chains(&request.effects));
+    Ok(pixels)
 }
 
 /// The preview's timeline, built the exporter's way.
@@ -1019,7 +1024,7 @@ mod tests {
         };
 
         let mut pool = wolfcut_media::ReaderPool::new(16 * 1024 * 1024, 2);
-        let bytes = preview_frame(&mut pool, &request).expect("previews");
+        let bytes = preview_frame(&mut pool, &mut wolfcut_media::FilterPool::new(), &request).expect("previews");
         assert_eq!(bytes.len(), 64 * 64 * 4);
         let centre = (32 * 64 + 32) * 4;
         assert!(
@@ -1042,7 +1047,7 @@ mod tests {
             clips: vec![outliving],
             effects: Vec::new(),
         };
-        let bytes = preview_frame(&mut pool, &late).expect("previews past the media's end");
+        let bytes = preview_frame(&mut pool, &mut wolfcut_media::FilterPool::new(), &late).expect("previews past the media's end");
         assert!(
             bytes[centre] > 120 && bytes[centre + 1] < 90,
             "past the end should freeze on the last frame, got {:?}",
@@ -1066,7 +1071,7 @@ mod tests {
             clips: vec![effected],
             effects: Vec::new(),
         };
-        let bytes = preview_frame(&mut pool, &filtered).expect("previews with a chain");
+        let bytes = preview_frame(&mut pool, &mut wolfcut_media::FilterPool::new(), &filtered).expect("previews with a chain");
         assert!(
             bytes[centre] < 90 && bytes[centre + 1] > 120,
             "the chain must be baked into the paused frame, got {:?}",

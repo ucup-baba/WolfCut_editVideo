@@ -679,6 +679,13 @@ struct ExportState(std::sync::Arc<jobs::SingleFlight>);
 /// app's lifetime: its whole value is what stays warm between scrubs.
 struct PoolState(std::sync::Arc<std::sync::Mutex<wolfcut_media::ReaderPool>>);
 
+/// The running FFmpeg filters the monitor lays timeline effects with.
+///
+/// Held across calls for the same reason the reader pool is: starting one is
+/// most of the cost. Measured on a 960x540 frame through a blur, 74 ms when
+/// the process has to be started against 19 ms when it is already there.
+struct FilterState(std::sync::Arc<std::sync::Mutex<wolfcut_media::FilterPool>>);
+
 /// What the UI sends for one true frame: an instant and a resolution. The
 /// clips come from the engine's own session - the UI no longer serialises
 /// its whole clip list per scrub frame (see engine decision 0009).
@@ -701,6 +708,7 @@ struct PreviewSpec {
 #[tauri::command]
 async fn preview_frame(
     state: tauri::State<'_, PoolState>,
+    filters: tauri::State<'_, FilterState>,
     editor: tauri::State<'_, editor_api::EditorState>,
     request: PreviewSpec,
 ) -> Result<tauri::ipc::Response, String> {
@@ -715,9 +723,11 @@ async fn preview_frame(
         clips,
     };
     let pool = std::sync::Arc::clone(&state.0);
+    let filters = std::sync::Arc::clone(&filters.0);
     tauri::async_runtime::spawn_blocking(move || {
         let mut pool = pool.lock().map_err(|_| "reader pool poisoned".to_owned())?;
-        export::preview_frame(&mut pool, &request)
+        let mut filters = filters.lock().map_err(|_| "filter pool poisoned".to_owned())?;
+        export::preview_frame(&mut pool, &mut filters, &request)
     })
     .await
     .map_err(|error| format!("preview task failed: {error}"))?
@@ -902,6 +912,9 @@ pub fn run() {
             app.manage(editor_api::EditorState(std::sync::Mutex::new(None)));
             app.manage(PoolState(std::sync::Arc::new(std::sync::Mutex::new(
                 wolfcut_media::ReaderPool::with_defaults(),
+            ))));
+            app.manage(FilterState(std::sync::Arc::new(std::sync::Mutex::new(
+                wolfcut_media::FilterPool::new(),
             ))));
             Ok(())
         })
