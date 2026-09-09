@@ -6,7 +6,7 @@ import {
   useState,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { convertFileSrc } from "@tauri-apps/api/core";
+import { mediaOrigin } from "../lib/engine";
 
 import { buildPreviewLook, type AppliedEffect, type CanvasOp } from "../lib/effects";
 import type { PreviewSource, TextOverlay } from "../lib/monitor";
@@ -71,6 +71,30 @@ function ratioLabel(width: number, height: number): string {
   const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b));
   const divisor = gcd(width, height) || 1;
   return `${width / divisor}:${height / divisor}`;
+}
+
+/**
+ * The URL for a media file, resolved once per path and remembered.
+ *
+ * The host mints these, so a path that was never imported has no URL and the
+ * element gets nothing to load - the same admission the asset scope enforces,
+ * arriving by a route every webview will actually read media over.
+ */
+function useMediaUrl(path: string | undefined): string | undefined {
+  const [urls, setUrls] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    if (!path || urls[path] !== undefined) return;
+    let live = true;
+    void mediaOrigin(path).then((url) => {
+      if (live) setUrls((known) => ({ ...known, [path]: url }));
+    });
+    return () => {
+      live = false;
+    };
+  }, [path, urls]);
+
+  return path ? urls[path] : undefined;
 }
 
 /** The video clip that should be on screen right now, if any. */
@@ -258,6 +282,7 @@ export function Preview({
   effects,
   ghost,
   engineStill,
+  onApproximationFailed,
   veil,
   mediaSize,
   selectedClipId,
@@ -295,6 +320,11 @@ export function Preview({
   /** The engine's true composite for the paused playhead - the exporter's own
    * plan and compositor. Drawn over the approximation while it holds. */
   engineStill: { bytes: ArrayBuffer; width: number; height: number } | null;
+  /** The `<video>` element could not load its source. Some platforms refuse
+      to decode media from the app's own URL scheme at all - WebKitGTK is one -
+      and there the smooth approximation simply does not exist. Saying so lets
+      the engine take over the frames it would otherwise have left to it. */
+  onApproximationFailed: () => void;
   /** A fade-to-colour transition passing over the playhead: a coloured wash
    * whose opacity the app computes per frame. Null when no fade is live. */
   veil: { color: string; opacity: number } | null;
@@ -321,6 +351,16 @@ export function Preview({
 }) {
   const { t } = useLocale();
   const video = useRef<HTMLVideoElement>(null);
+  const sourceUrl = useMediaUrl(source?.path);
+
+  // An empty URL means the host could not bind its loopback port, so the
+  // element has nothing to load and never will. That is the same news as a
+  // decoder that refuses the file, and it has to reach the monitor the same
+  // way, or a failed bind leaves a black rectangle with no error to explain
+  // it.
+  useEffect(() => {
+    if (sourceUrl === "") onApproximationFailed();
+  }, [sourceUrl, onApproximationFailed]);
   const still = useRef<HTMLImageElement>(null);
   const loadedClip = useRef<string | null>(null);
 
@@ -436,12 +476,18 @@ export function Preview({
       return;
     }
 
+    // Nothing to load until the host has minted a URL for this path; the
+    // effect runs again when it arrives.
+    if (!sourceUrl) {
+      return;
+    }
+
     if (loadedClip.current !== source.clipId) {
       loadedClip.current = source.clipId;
-      element.src = convertFileSrc(source.path);
+      element.src = sourceUrl;
       element.load();
     }
-  }, [source, hasFrame]);
+  }, [source, hasFrame, sourceUrl]);
 
   // Same corrective sync as the audio preview: generous tolerance while
   // playing (a reseek is a visible stutter), tight while paused (a seek is the
@@ -531,6 +577,7 @@ export function Preview({
                   ref={video}
                   muted
                   playsInline
+                  onError={onApproximationFailed}
                   onLoadedMetadata={(event) =>
                     setPictureSize({
                       width: event.currentTarget.videoWidth,
@@ -549,7 +596,7 @@ export function Preview({
                     // decoded one.
                     key={source.clipId}
                     ref={still}
-                    src={convertFileSrc(source.path)}
+                    src={sourceUrl}
                     alt=""
                     draggable={false}
                     onLoad={(event) =>
@@ -1067,16 +1114,19 @@ function GhostVideo({
   ghost: { clipId: string; path: string; time: number; speed: number; opacity: number };
   playing: boolean;
 }) {
+  const ghostUrl = useMediaUrl(ghost.path);
   const element = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
     const media = element.current;
     if (!media) return;
-    media.src = convertFileSrc(ghost.path);
+    if (!ghostUrl) return;
+    media.src = ghostUrl;
     media.load();
-    // Mount effect only: the sync effect below lands the position.
+    // Mount effect only: the sync effect below lands the position. Reruns
+    // once more when the URL arrives, since a path alone cannot be loaded.
      
-  }, [ghost.path]);
+  }, [ghost.path, ghostUrl]);
 
   useEffect(() => {
     const media = element.current;

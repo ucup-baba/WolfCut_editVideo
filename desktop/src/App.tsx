@@ -1021,6 +1021,12 @@ function Editor({
   // useEngineTruth and desktop decision 0009. Quality is the footer's
   // dropdown: what fraction of the output frame the engine composites.
   const [previewQuality, setPreviewQuality] = useState(0.5);
+  // Latched, never cleared: a platform whose webview cannot decode media at
+  // all will not start being able to mid-session, and flapping between the
+  // two preview paths would be worse than either.
+  const [approximationBroken, setApproximationBroken] = useState(false);
+  const onApproximationFailed = useCallback(() => setApproximationBroken(true), []);
+
   const engineStill = useEngineTruth({
     playing,
     loaded,
@@ -1030,6 +1036,7 @@ function Editor({
     frame,
     fps: session ? session.rateNum / session.rateDen : 30,
     quality: previewQuality,
+    approximationBroken,
     latest,
   });
 
@@ -1306,6 +1313,7 @@ function Editor({
               effects={previewClip?.videoEffects ?? null}
               ghost={previewGhost}
               engineStill={engineStill}
+              onApproximationFailed={onApproximationFailed}
               veil={previewVeil}
               mediaSize={
                 previewMedia && previewMedia.width && previewMedia.height

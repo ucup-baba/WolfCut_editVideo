@@ -47,6 +47,7 @@ export function useEngineTruth({
   frame,
   fps,
   quality,
+  approximationBroken,
   latest,
 }: {
   playing: boolean;
@@ -61,6 +62,10 @@ export function useEngineTruth({
   fps: number;
   /** Preview resolution as a fraction of the output frame: 1, 0.5, 0.25. */
   quality: number;
+  /** The `<video>` approximation is not available on this platform, so a
+      single layer has nothing to draw it unless the engine streams that too.
+      Costs smoothness, which is the right trade against a black monitor. */
+  approximationBroken: boolean;
   /** Live values, read mid-flight without restarting the loops. */
   latest: { current: { playhead: number; frame: { width: number; height: number }; project: EditorProject } };
 }): EngineStill | null {
@@ -121,7 +126,10 @@ export function useEngineTruth({
       let presented = -1;
       while (live) {
         const now = latest.current.playhead;
-        if (visualLayers(now) < 2) {
+        // Two layers normally: one layer is the element preview's job, and it
+        // does it more smoothly than a round trip per frame ever will. Where
+        // that element cannot play at all, one layer becomes the engine's.
+        if (visualLayers(now) < (approximationBroken ? 1 : 2)) {
           setEngineStill(null);
           presented = -1;
           await wait(120);
@@ -160,7 +168,7 @@ export function useEngineTruth({
     return () => {
       live = false;
     };
-  }, [playing, loaded, latest, fps, quality]);
+  }, [playing, loaded, latest, fps, quality, approximationBroken]);
 
   return engineStill;
 }

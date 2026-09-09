@@ -10,6 +10,7 @@
 pub mod export;
 mod editor_api;
 mod jobs;
+mod media_server;
 mod playback;
 mod projects;
 mod templates;
@@ -155,6 +156,25 @@ pub(crate) fn grant_asset(app: &tauri::AppHandle, path: &str) {
     if let Err(error) = app.asset_protocol_scope().allow_file(path) {
         eprintln!("wolfcut: could not scope {path}: {error}");
     }
+    // The same admission, for the platforms whose webview will not read
+    // media through a custom scheme. One call site, so the asset protocol
+    // and the loopback server can never disagree about what is readable.
+    if let Some(server) = app.try_state::<media_server::MediaServer>() {
+        server.allow(path);
+    }
+}
+
+/// Where the webview should fetch media from, for the element preview.
+///
+/// Empty when no loopback port could be bound. The monitor treats that the
+/// same way it treats a webview that cannot decode: it stops asking the
+/// element for pictures and takes the engine's frames instead.
+#[tauri::command]
+fn media_origin(app: tauri::AppHandle, path: String) -> String {
+    use tauri::Manager;
+    app.try_state::<media_server::MediaServer>()
+        .and_then(|server| server.url_for(&path))
+        .unwrap_or_default()
 }
 
 /// The version of the app the UI is talking to. Also a liveness check on the
@@ -861,6 +881,11 @@ pub fn run() {
             // the resource directory needs the app to exist.
             use tauri::Manager;
             use_bundled_ffmpeg(app);
+            // Before every other managed piece: `grant_asset` looks this
+            // up, and a grant that arrives first would be silently lost.
+            if let Some(server) = media_server::MediaServer::start() {
+                app.manage(server);
+            }
             app.manage(playback::Playback::start(app.handle().clone()));
             app.manage(ExportState(std::sync::Arc::new(jobs::SingleFlight::new())));
             app.manage(transcribe::DownloadState(std::sync::Arc::new(
@@ -880,6 +905,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
+            media_origin,
             probe_media,
             engine_version,
             read_media_bytes,

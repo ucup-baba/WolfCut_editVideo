@@ -381,6 +381,19 @@ export async function cancelExport(): Promise<void> {
 }
 
 /**
+ * Where the webview should fetch one media file from, for the element
+ * preview. Empty string when the host could not bind a loopback port, which
+ * the monitor treats the same as an element that cannot decode: it stops
+ * asking for pictures and lets the engine's own frames stand.
+ *
+ * A loopback URL rather than the app's asset scheme because not every webview
+ * will decode media from a custom scheme - WebKitGTK refuses outright.
+ */
+export async function mediaOrigin(path: string): Promise<string> {
+  return invoke<string>("media_origin", { path });
+}
+
+/**
  * The engine-composited frame at one instant: the exporter's own plan,
  * compositor and effects, fed from the host's reader pool and flattened
  * from the engine's own session. Raw RGBA bytes, exactly
