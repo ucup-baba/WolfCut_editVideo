@@ -33,6 +33,7 @@ import { createAssets, requestAssets, requestVideoPeaks } from "./lib/assets";
 import {
   activeTimeline,
   type EditorCommand,
+  type TimelineEffect,
   clipsAt,
   detachedAudioOf,
   findClip,
@@ -514,6 +515,50 @@ function Editor({
     void dispatch({ op: "batch", commands });
     pushToast(t("textPanel.appliedToTrack", { count: String(commands.length) }), false);
   }, [selectedClipIds, dispatch, pushToast, t]);
+
+  const [selectedEffectId, setSelectedEffectId] = useState<string | null>(null);
+
+  /** Lays an effect over the timeline at the playhead. */
+  const addTimelineEffect = useCallback(
+    (effectId: string) => {
+      void dispatch({
+        op: "addTimelineEffect",
+        effectId,
+        start: latest.current.playhead,
+        // Long enough to see and to grab. The block is draggable the moment
+        // it lands, so an editorial default beats a dialog asking for one.
+        duration: 4,
+      }).then((created) => {
+        if (created) setSelectedEffectId(created);
+      });
+      pushToast(t("toast.effectOnTimeline"), false);
+    },
+    [dispatch, pushToast, t],
+  );
+
+  const commitTimelineEffect = useCallback(
+    (effectId: string, patch: Partial<TimelineEffect>) => {
+      void dispatch({
+        op: "updateTimelineEffect",
+        effectId,
+        patch: {
+          start: patch.start,
+          duration: patch.duration,
+          easeIn: patch.easeIn,
+          easeOut: patch.easeOut,
+        },
+      });
+    },
+    [dispatch],
+  );
+
+  const removeTimelineEffect = useCallback(
+    (effectId: string) => {
+      void dispatch({ op: "removeTimelineEffects", effectIds: [effectId] });
+      setSelectedEffectId((current) => (current === effectId ? null : current));
+    },
+    [dispatch],
+  );
 
   const applyEffect = useCallback(
     (effectId: string) => {
@@ -1402,6 +1447,7 @@ function Editor({
               onRemoveFont={removeFont}
               onChangeClip={changeClip}
               onApplyTextStyleToTrack={applyTextStyleToTrack}
+              onAddEffectToTimeline={addTimelineEffect}
               onCommitClip={commitEcho}
               onSpeedChange={changeSpeed}
               onModifyProject={openModifyProject}
@@ -1465,6 +1511,10 @@ function Editor({
             onMoveTimeline={(timelineId, index) =>
               void dispatch({ op: "moveTimeline", timelineId, index })
             }
+            selectedEffectId={selectedEffectId}
+            onSelectEffect={setSelectedEffectId}
+            onEffectCommit={commitTimelineEffect}
+            onRemoveEffect={removeTimelineEffect}
             onRequestRemoveTimeline={(timelineId) => {
               const meta = project.timelines.find((candidate) => candidate.id === timelineId);
               if (meta) setTimelineToDelete({ id: meta.id, name: meta.name });

@@ -42,6 +42,8 @@ export type { ClipKind } from "./generated/ClipKind";
 export type { MediaItem } from "./generated/MediaItem";
 export type { Track } from "./generated/Track";
 export type { Clip } from "./generated/Clip";
+export type { TimelineEffect } from "./generated/TimelineEffect";
+export type { TimelineEffectPatch } from "./generated/TimelineEffectPatch";
 export type { BlendMode } from "./generated/BlendMode";
 export type { Timeline as TimelineData } from "./generated/Timeline";
 export type { SettingsView as EditorSettings } from "./generated/SettingsView";

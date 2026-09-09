@@ -12,11 +12,13 @@ import {
   type Clip,
   type ClipMove,
   type EditorProject,
+  type TimelineEffect,
   type TimelineMeta,
   type Track,
 } from "../lib/editor";
 import { useLocale, type MsgKey } from "../lib/i18n";
 import { timecode } from "../lib/time";
+import { EFFECT_LANE_HEIGHT, EffectLane } from "./EffectLane";
 import { Icon, IconButton } from "./Icon";
 import { Menu, type MenuOption } from "./Menu";
 import { Bar, Divider, PANEL_SHELL, Spacer } from "./Panel";
@@ -161,6 +163,10 @@ export function TimelinePanel({
   onRenameTimeline,
   onMoveTimeline,
   onRequestRemoveTimeline,
+  selectedEffectId,
+  onSelectEffect,
+  onEffectCommit,
+  onRemoveEffect,
   onGestureEnd,
 }: {
   project: EditorProject;
@@ -214,6 +220,12 @@ export function TimelinePanel({
   onMoveTimeline: (timelineId: string, index: number) => void;
   /** Asks the app to confirm and delete; the panel never deletes directly. */
   onRequestRemoveTimeline: (timelineId: string) => void;
+  /** The effect block the timeline is following, if any. */
+  selectedEffectId: string | null;
+  onSelectEffect: (effectId: string | null) => void;
+  /** An effect drag finished: one command for the whole gesture. */
+  onEffectCommit: (effectId: string, patch: Partial<TimelineEffect>) => void;
+  onRemoveEffect: (effectId: string) => void;
   /** A move or trim drag finished; the echoed change becomes one command. */
   onGestureEnd: () => void;
 }) {
@@ -1033,6 +1045,27 @@ export function TimelinePanel({
           onClick={() => onZoom(1 / 1.4)}
         />
       </Bar>
+
+      {/* Above the lanes, not among them: an effect covers a span of the
+          whole picture, so it belongs to no single track. */}
+      <div className="flex shrink-0 border-b border-hairline">
+        <div
+          className="flex shrink-0 items-center border-r border-hairline px-2.5
+                     text-[11px] text-tertiary"
+          style={{ width: HEADER_WIDTH, height: EFFECT_LANE_HEIGHT }}
+        >
+          {t("effectLane.title")}
+        </div>
+        <EffectLane
+          effects={timeline.effects}
+          secondsPerPixel={secondsPerPixel}
+          scrollLeft={scrollLeft}
+          selectedId={selectedEffectId}
+          onSelect={onSelectEffect}
+          onCommit={onEffectCommit}
+          onRemove={onRemoveEffect}
+        />
+      </div>
 
       <div className="flex min-h-0 flex-1">
         <div

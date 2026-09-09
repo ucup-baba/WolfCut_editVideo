@@ -27,6 +27,7 @@ export function EffectsPanel({
   onChangeEffects,
   onChangeTransition,
   onCommit,
+  onAddToTimeline,
 }: {
   clip: Clip | null;
   /** Whether a clip ends where this one starts - what a transition needs. */
@@ -35,6 +36,9 @@ export function EffectsPanel({
   onChangeTransition: (transition: ClipTransition | undefined) => void;
   /** Ends the gesture: the accumulated change becomes one engine command. */
   onCommit: () => void;
+  /** Lays the effect over a span of the timeline instead of onto this clip,
+      so it can run across a cut. Needs no clip selected. */
+  onAddToTimeline: (effectId: string) => void;
 }) {
   const { t } = useLocale();
 
@@ -223,6 +227,31 @@ export function EffectsPanel({
             >
               <Icon name="plus" size={12} className="shrink-0 text-tertiary" />
               <span className="min-w-0 flex-1 truncate text-xs text-primary">{effect.label}</span>
+              {/* The second way to place the same effect: over the timeline
+                  rather than onto this clip. A button inside the row, so the
+                  choice is where the effect already is rather than a mode
+                  the panel has to be put into. */}
+              <span
+                role="button"
+                tabIndex={0}
+                title={t("effects.addToTimelineHelp")}
+                aria-label={t("effects.addToTimeline")}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onAddToTimeline(effect.id);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    onAddToTimeline(effect.id);
+                  }
+                }}
+                className="shrink-0 cursor-pointer rounded px-1.5 py-0.5 text-[10px]
+                           text-tertiary transition-colors hover:bg-tool-active-soft
+                           hover:text-primary"
+              >
+                {t("effects.addToTimeline")}
+              </span>
             </button>
           </li>
         ))}

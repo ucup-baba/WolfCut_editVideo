@@ -75,6 +75,7 @@ export const RightPanel = memo(function RightPanel({
   onChangeClip,
   onCommitClip,
   onApplyTextStyleToTrack,
+  onAddEffectToTimeline,
   onSpeedChange,
   onAddFont,
   onRemoveFont,
@@ -97,6 +98,8 @@ export const RightPanel = memo(function RightPanel({
   onCommitClip: () => void;
   /** Give every other title on this clip's track this clip's look. */
   onApplyTextStyleToTrack: () => void;
+  /** Lays an effect over the timeline rather than onto a clip. */
+  onAddEffectToTimeline: (effectId: string) => void;
   onSpeedChange: (speed: number) => void;
   onAddFont: () => void;
   onRemoveFont: (family: string) => void;
@@ -192,6 +195,7 @@ export const RightPanel = memo(function RightPanel({
             onChangeClip({ transitionIn })
           }
           onCommit={onCommitClip}
+          onAddToTimeline={onAddEffectToTimeline}
         />
       )}
     </Panel>
