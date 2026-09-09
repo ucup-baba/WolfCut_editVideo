@@ -1186,6 +1186,12 @@ function TimelineTab({
           type="button"
           aria-label={t("timeline.deleteNamed", { name: timeline.name })}
           title={t("timeline.deleteNamed", { name: timeline.name })}
+          // Kept off the tab's reorder drag. The tab captures the pointer on
+          // pointerdown, and a captured pointer retargets its pointerup - so
+          // the click would be computed against the tab rather than this
+          // button, and pressing the x would quietly switch tabs instead of
+          // deleting. Stopping the click alone cannot help: it never arrives.
+          onPointerDown={(event) => event.stopPropagation()}
           onClick={(event) => {
             // The x must not also switch tabs: deleting an inactive timeline
             // should not first drag the editor onto it.
