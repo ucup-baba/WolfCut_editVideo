@@ -518,32 +518,13 @@ function Editor({
 
   const [selectedEffectId, setSelectedEffectId] = useState<string | null>(null);
 
-  /**
-   * Timeline effects covering the playhead, as the element preview's own
-   * approximation understands them.
-   *
-   * The engine's frames already carry these, ramp and all - but a single clip
-   * playing is drawn by the `<video>` element, which knows nothing about
-   * FFmpeg. Feeding them through the same CSS look the clip's own effects use
-   * is how that path has always approximated an effect, so a timeline effect
-   * is visible while playing instead of only when the playhead rests.
-   *
-   * At full strength: CSS has no general way to be half a blur, so the ramp
-   * is the truthful frame's to show. The approximation says *that* the effect
-   * is there, which is its job; the frame under the pause says how much.
-   */
-  const previewTimelineEffects = useMemo(
-    () =>
-      activeTimeline(project)
-        .effects.filter(
-          (effect) =>
-            effect.enabled &&
-            playhead >= effect.start &&
-            playhead <= effect.start + effect.duration,
-        )
-        .map((effect) => ({ id: effect.effectId, params: effect.params })),
-    [project, playhead],
-  );
+  // Timeline effects are deliberately absent from the element preview's CSS
+  // approximation. It has no general way to be half a blur, so it drew them
+  // at full strength while the engine's frame - the one that knows the ramp -
+  // was still a round trip away: full, then a jump down to where the ramp
+  // actually was, then the climb. A fast wrong answer is worse than waiting
+  // for the right one, and the wait is one frame. `useEngineTruth` takes the
+  // engine's frames whenever an effect covers the playhead for this reason.
 
   /** Lays an effect over the timeline at the playhead. */
   const addTimelineEffect = useCallback(
@@ -1415,7 +1396,7 @@ function Editor({
                   : null
               }
               opacity={previewClip?.opacity ?? 1}
-              effects={[...(previewClip?.videoEffects ?? []), ...previewTimelineEffects]}
+              effects={previewClip?.videoEffects ?? null}
               ghost={previewGhost}
               engineStill={engineStill}
               onApproximationFailed={onApproximationFailed}
