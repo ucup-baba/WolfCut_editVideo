@@ -74,6 +74,7 @@ export const RightPanel = memo(function RightPanel({
   frameRate,
   onChangeClip,
   onCommitClip,
+  onApplyTextStyleToTrack,
   onSpeedChange,
   onAddFont,
   onRemoveFont,
@@ -94,6 +95,8 @@ export const RightPanel = memo(function RightPanel({
   onChangeClip: (patch: Partial<Clip>) => void;
   /** Ends a control gesture: the accumulated change becomes one command. */
   onCommitClip: () => void;
+  /** Give every other title on this clip's track this clip's look. */
+  onApplyTextStyleToTrack: () => void;
   onSpeedChange: (speed: number) => void;
   onAddFont: () => void;
   onRemoveFont: (family: string) => void;
@@ -160,6 +163,7 @@ export const RightPanel = memo(function RightPanel({
           fonts={fonts}
           onChange={onChangeClip}
           onCommit={onCommitClip}
+          onApplyToTrack={onApplyTextStyleToTrack}
           onAddFont={onAddFont}
           onRemoveFont={onRemoveFont}
         />

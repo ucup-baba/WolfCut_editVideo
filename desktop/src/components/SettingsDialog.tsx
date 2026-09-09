@@ -23,6 +23,8 @@ import {
   getTranscriberModel,
   getTtsModel,
   setTranscriberLanguage,
+  getCaptionMaxWords,
+  setCaptionMaxWords,
   setTranscriberModel,
   setTtsModel,
 } from "../lib/settings";
@@ -170,6 +172,14 @@ function formatSize(bytes: number): string {
 }
 
 /** Whisper input languages - what the audio is in, not what the UI speaks. */
+/** Caption lengths worth offering. Zero keeps whisper's own segmentation. */
+const CAPTION_WORDS: { words: number; labelKey: MsgKey }[] = [
+  { words: 0, labelKey: "settings.transcriber.wordsAsSpoken" },
+  { words: 3, labelKey: "settings.transcriber.words3" },
+  { words: 5, labelKey: "settings.transcriber.words5" },
+  { words: 8, labelKey: "settings.transcriber.words8" },
+];
+
 const LANGUAGES: { id: string; labelKey: MsgKey }[] = [
   { id: "auto", labelKey: "settings.transcriber.languageAuto" },
   { id: "en", labelKey: "settings.transcriber.languageEnglish" },
@@ -181,6 +191,7 @@ function TranscriberSettings() {
   const [error, setError] = useState<string | null>(null);
   const [model, setModel] = useState(getTranscriberModel());
   const [language, setLanguage] = useState(getTranscriberLanguage());
+  const [captionWords, setCaptionWords] = useState(getCaptionMaxWords());
   /** The model being downloaded and how far along it is, or null. */
   const [download, setDownload] = useState<{ id: string; fraction: number } | null>(null);
   const unlisten = useRef<(() => void) | null>(null);
@@ -294,6 +305,33 @@ function TranscriberSettings() {
               onClick={() => chooseLanguage(entry.id)}
               className={`flex-1 cursor-pointer rounded-md px-2 py-1 text-[12px] transition-colors ${
                 language === entry.id
+                  ? "bg-panel text-primary shadow-[0_1px_2px_rgba(0,0,0,0.14)]"
+                  : "text-secondary hover:text-primary"
+              }`}
+            >
+              {t(entry.labelKey)}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <section>
+        <h3 className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-tertiary">
+          {t("settings.transcriber.captionLength")}
+          <HelpTip align="start" text={t("settings.transcriber.captionLengthHelp")} />
+        </h3>
+        <div className="flex w-72 rounded-lg bg-sunken p-0.5">
+          {CAPTION_WORDS.map((entry) => (
+            <button
+              key={entry.words}
+              type="button"
+              aria-pressed={captionWords === entry.words}
+              onClick={() => {
+                setCaptionMaxWords(entry.words);
+                setCaptionWords(entry.words);
+              }}
+              className={`flex-1 cursor-pointer rounded-md px-2 py-1 text-[12px] transition-colors ${
+                captionWords === entry.words
                   ? "bg-panel text-primary shadow-[0_1px_2px_rgba(0,0,0,0.14)]"
                   : "text-secondary hover:text-primary"
               }`}

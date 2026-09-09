@@ -15,7 +15,12 @@ import {
   type MediaItem,
 } from "../lib/editor";
 import { transcribeClip } from "../lib/engine";
-import { getTranscriberLanguage, getTranscriberModel } from "../lib/settings";
+import { splitSegments } from "../lib/captions";
+import {
+  getCaptionMaxWords,
+  getTranscriberLanguage,
+  getTranscriberModel,
+} from "../lib/settings";
 import { defaultTextStyle } from "../lib/text";
 
 export function useCaptions({
@@ -34,13 +39,17 @@ export function useCaptions({
       setTranscribing(true);
       onToast("Transcribing...", false);
       try {
-        const segments = await transcribeClip({
+        const transcript = await transcribeClip({
           path: media.path,
           sourceStart: clip.sourceStart,
           window: clip.duration * clip.speed,
           language: getTranscriberLanguage(),
           modelId: getTranscriberModel(),
         });
+        // Whisper segments by sentence; captions want a few words. The
+        // split happens here rather than in the engine because how long a
+        // caption should be is a look, not a fact about the audio.
+        const segments = splitSegments(transcript, getCaptionMaxWords());
         if (segments.length === 0) {
           onToast("No speech found", false);
           return;

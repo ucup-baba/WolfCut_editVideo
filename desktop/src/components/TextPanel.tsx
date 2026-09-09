@@ -21,6 +21,7 @@ export function TextPanel({
   fonts,
   onChange,
   onCommit,
+  onApplyToTrack,
   onAddFont,
   onRemoveFont,
 }: {
@@ -31,6 +32,10 @@ export function TextPanel({
   onChange: (patch: Partial<Clip>) => void;
   /** Gesture finished - the accumulated change becomes one engine command. */
   onCommit: () => void;
+  /** Give every other title on this clip's track this look, words untouched.
+      Auto-captions are one clip per line, so without this a restyle means
+      opening every line in turn. */
+  onApplyToTrack: () => void;
   onAddFont: () => void;
   onRemoveFont: (family: string) => void;
 }) {
@@ -333,6 +338,21 @@ export function TextPanel({
           onReset={() => { onChange({ offsetY: 0 }); onCommit(); }}
         />
       </Group>
+
+      {/* Last, and a button rather than a control: it changes clips other
+          than the selected one, which nothing else in this panel does. */}
+      <button
+        type="button"
+        onClick={onApplyToTrack}
+        className="mb-1 w-full cursor-pointer rounded-lg border border-hairline-strong
+                   bg-sunken px-2.5 py-2 text-[12px] text-secondary transition-colors
+                   hover:border-accent hover:text-primary"
+      >
+        {t("textPanel.applyToTrack")}
+      </button>
+      <p className="text-[11px] leading-snug text-tertiary">
+        {t("textPanel.applyToTrackHelp")}
+      </p>
     </div>
   );
 }

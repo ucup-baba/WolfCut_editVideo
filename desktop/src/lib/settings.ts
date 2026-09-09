@@ -30,6 +30,24 @@ export function setTranscriberLanguage(code: string): void {
   localStorage.setItem(LANGUAGE_KEY, code);
 }
 
+const CAPTION_WORDS_KEY = "wolfcut.transcriber.captionWords";
+
+/**
+ * Most words a single caption may hold, or 0 for whisper's own segmentation.
+ *
+ * Zero by default: a transcript is what the tool returns, and cutting it
+ * finer is an editorial choice this app should not make on anyone's behalf
+ * without being asked. Short-form captions usually want four to six.
+ */
+export function getCaptionMaxWords(): number {
+  const stored = Number(localStorage.getItem(CAPTION_WORDS_KEY));
+  return Number.isFinite(stored) && stored > 0 ? Math.floor(stored) : 0;
+}
+
+export function setCaptionMaxWords(words: number): void {
+  localStorage.setItem(CAPTION_WORDS_KEY, String(Math.max(0, Math.floor(words))));
+}
+
 const TTS_MODEL_KEY = "wolfcut.tts.model";
 const TTS_VOICE_KEY = "wolfcut.tts.voice";
 

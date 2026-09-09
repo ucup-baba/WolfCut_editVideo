@@ -32,6 +32,7 @@ import { TimelinePanel, resolveDrop, type Tool } from "./components/TimelinePane
 import { createAssets, requestAssets, requestVideoPeaks } from "./lib/assets";
 import {
   activeTimeline,
+  type EditorCommand,
   clipsAt,
   detachedAudioOf,
   findClip,
@@ -481,6 +482,38 @@ function Editor({
       setError(String(cause));
     }
   }, [dispatch, t]);
+
+  /**
+   * Gives every other title on the selected clip's track the selected clip's
+   * look, each keeping its own words.
+   *
+   * Auto-captions arrive as one text clip per line, each holding a private
+   * copy of the style it was made with, and the inspector edits one clip at
+   * a time - so restyling a transcript meant opening every line in turn. One
+   * batch, one undo step.
+   */
+  const applyTextStyleToTrack = useCallback(() => {
+    const current = latest.current.project;
+    const source = selectedClipIds.length === 1 ? findClip(current, selectedClipIds[0]) : null;
+    if (!source?.text) return;
+
+    const style = source.text;
+    const commands: EditorCommand[] = activeTimeline(current)
+      .clips.filter(
+        (clip) => clip.id !== source.id && clip.trackId === source.trackId && clip.text,
+      )
+      // Its own words, everything else the selected clip's. Carrying the
+      // content over would overwrite the transcript with one line of it.
+      .map((clip) => ({
+        op: "updateClip",
+        clipId: clip.id,
+        patch: { text: { ...style, content: clip.text?.content ?? "" } },
+      }));
+
+    if (commands.length === 0) return;
+    void dispatch({ op: "batch", commands });
+    pushToast(t("textPanel.appliedToTrack", { count: String(commands.length) }), false);
+  }, [selectedClipIds, dispatch, pushToast, t]);
 
   const applyEffect = useCallback(
     (effectId: string) => {
@@ -1368,6 +1401,7 @@ function Editor({
               onAddFont={addFont}
               onRemoveFont={removeFont}
               onChangeClip={changeClip}
+              onApplyTextStyleToTrack={applyTextStyleToTrack}
               onCommitClip={commitEcho}
               onSpeedChange={changeSpeed}
               onModifyProject={openModifyProject}
